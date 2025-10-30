@@ -1,0 +1,23 @@
+{
+    "model_variant": "edge",
+    "resolution": "720",
+    "fps": 16,
+    "dit_path": "",
+    "load_ema": false,
+    "prompt": "",
+    "input_path": "",
+    "negative_prompt": "",
+    "aspect_ratio": "16:9",
+    "num_conditional_frames": 1,
+    "batch_input_json": null,
+    "guidance": 7,
+    "seed": 0,
+    "save_path": "",
+    "num_gpus": 1,
+    "disable_guardrail": false,
+    "offload_guardrail": false,
+    "trt_release_workspace": false,
+    "trt_engine_prefix": "",
+    "benchmark": false,
+    "use_cuda_graphs": false
+}
