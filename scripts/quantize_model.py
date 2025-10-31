@@ -13,34 +13,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
+import json
 import os
 import random
 import sys
-import json
-import argparse
 import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
-import torch
-from megatron.core import parallel_state
-
-# ModelOPT
 import modelopt.torch.quantization as mtq
 import modelopt.torch.opt as mto
+import torch
 import tqdm
+from megatron.core import parallel_state
 
 from cosmos_transfer2._src.imaginaire.utils import distributed, log, misc
 from cosmos_transfer2._src.predict2.inference.video2world import _VIDEO_EXTENSIONS
 from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
-from cosmos_transfer2.config import BASE_MODEL_VARIANTS, ModelVariant
+from cosmos_transfer2.config import BASE_MODEL_VARIANTS, MODEL_CHECKPOINTS, ModelKey, ModelVariant, SetupArguments
 from cosmos_transfer2.inference import Control2WorldInference
 
 SCRIPTS_ROOT = os.path.dirname(__file__)
 VIDEO2WORLD_ASSETS = os.path.join(SCRIPTS_ROOT, "../assets/video2world")  # TODO(rafonsorodri): gather controlvideo2world assets for each modality and multivew variants
 DIT_PATH = "checkpoints/nvidia/Cosmos-Transfer2.5-2B/{domain}/{modality}/{checkpoint_name}"
 
+QUANTIZATION_MODES = {
+    "FP8": mtq.FP8_DEFAULT_CFG,
+    # Quantize with SVDquant (NVFP4)
+    "NVFP4": mtq.NVFP4_SVDQUANT_DEFAULT_CFG,
+}
 VARIANTS = [v.name for v in BASE_MODEL_VARIANTS] + [ModelVariant.AUTO_MULTIVIEW.name]  # TODO(rafonsorodri): add support for robot-domain variants upon their release
 
 
@@ -60,11 +63,10 @@ def make_parser():
     parser.add_argument("--checkpoint_name", type=str, default="",
                         help="Optionally override checkpoint filename (`*.pt`) to load for calibration. Defaults to the"
                              " registered post-trained checkpoint.")
-    parser.add_argument("--config", type=str, default="fp8", help="Quantization mode (fp8 or svdquant)")
+    parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
+                        help="Quantization mode (FP8 or NVFP4)")
     parser.add_argument("--resolution", choices=["480", "720"], default="720", type=str,
                         help="Resolution of the model to use for video-to-world generation")
-    # parser.add_argument("--natten", action="store_true",
-    #                     help="Optimize checkpoints with NeighbourhoodAttention")
     parser.add_argument("--calibration_mode", choices=["FULL", "MINIMAL"], default="FULL",
                         help='Calibration mode controls the number of samples to use during model optimization. "FULL"'
                              'processes the entire dataset, leading to higher accuracy retention in exchange for slower'
@@ -88,8 +90,6 @@ def calibration_samples_required(args: argparse.Namespace, quant_config: dict) -
 
 
 def setup_pipeline(args: argparse.Namespace):
-    from cosmos_transfer2.config import MODEL_CHECKPOINTS, ModelKey, SetupArguments
-
     log.info(f"Using model variant: {args.model_variant}")
     try:
         model_variant = ModelVariant(args.model_variant)
@@ -188,10 +188,12 @@ def process_single_generation(
     seed: int,
 ) -> bool:
     del num_video_frames  # Implicit from control video
+
     # Validate input file
     if not validate_input_file(input_path, num_conditional_frames):
         log.warning(f"Input file validation failed: {input_path}")
         return False
+
     log.info(f"Running ControlVideo2WorldInference\ninput: {input_path}\nprompt: {prompt}")
     start_time = time.time()
     video = pipe.generate_img2world(
@@ -270,18 +272,18 @@ def calibrate_dit_denoiser(pipe, args: argparse.Namespace, quant_config):
         "seed": args.seed,
     })
 
-    dit_net = pipe.model.net  # TODO(rafonsorodri): + control blocks
+    dit_controlnet = pipe.model.net  # Contains base and control branches
 
     # Fuse QKV projection
-    for block in dit_net.blocks:
+    for block in dit_controlnet.blocks + dit_controlnet.control_blocks:
         block.self_attn.fuse_qkv_proj()
 
-    def forward_loop(dit_net):
-        pipe.model.net = dit_net  # TODO(rafonsorodri): + control blocks
+    def forward_loop(dit_controlnet):
+        pipe.model.net = dit_controlnet
         generate_video(pipe, inference_args, inference_samples)
         return pipe.model.net
 
-    return mtq.quantize(dit_net, quant_config, forward_loop)
+    return mtq.quantize(dit_controlnet, quant_config, forward_loop)
 
 
 def main(cmdargs):
@@ -301,24 +303,20 @@ def main(cmdargs):
 
     pipe = setup_pipeline(args)
 
-    quant_config = {
-        # Quantize into FP8
-        "fp8": mtq.FP8_DEFAULT_CFG,
-        # Quantize with SVDquant (FP4)
-        "svdquant": mtq.NVFP4_SVDQUANT_DEFAULT_CFG,
-    }[cmdargs.config.lower()]
+    quant_config = QUANTIZATION_MODES[cmdargs.mode.upper()]
 
-    dit_net = calibrate_dit_denoiser(pipe, args, quant_config)
+    dit_controlnet = calibrate_dit_denoiser(pipe, args, quant_config)
 
     # Save checkpoint and return quantized pipeline
-    filename_noext = f"output/dit_net_{cmdargs.model_variant}_{cmdargs.resolution}_{cmdargs.config}"
-    mto.save(dit_net, f"{filename_noext}.pt")
+    filename_noext = f"output/dit_controlnet_{cmdargs.model_variant}_{cmdargs.resolution}_{cmdargs.mode}"
+    log.info(f"Saving quantized checkpoint to: {filename_noext}.pt")
+    mto.save(dit_controlnet, f"{filename_noext}.pt")
     real_stdout = sys.stdout
     with open(f"{filename_noext}.mtq-rep.txt", 'w') as sys.stdout:
-        mtq.print_quant_summary(dit_net)
+        mtq.print_quant_summary(dit_controlnet)
     sys.stdout = real_stdout
 
-    pipe.dit = dit_net
+    pipe.dit = dit_controlnet
 
     return pipe
 
