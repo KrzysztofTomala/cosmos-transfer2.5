@@ -397,6 +397,22 @@ class Attention(nn.Module):
             if hasattr(layer, "reset_parameters"):
                 layer.reset_parameters()
 
+    def fuse_qkv_proj(self) -> None:
+        assert self.is_selfattn, "Only self-attention supports fusing QKV"
+        assert self.q_proj.bias is None, "QKV proj bias is not supported"
+        assert self.k_proj.bias is None, "QKV proj bias is not supported"
+        assert self.v_proj.bias is None, "QKV proj bias is not supported"
+        qkv_proj = nn.Linear(self.query_dim, self._inner_dim * 3, bias=False)
+        qkv_proj.load_state_dict({
+            'weight': torch.cat([self.q_proj.weight, self.k_proj.weight, self.v_proj.weight], dim=0),
+        })
+        qkv_proj.to(self.q_proj.weight.device)
+        qkv_proj.to(self.q_proj.weight.dtype)
+        del self.q_proj
+        del self.k_proj
+        del self.v_proj
+        self.q_proj = qkv_proj
+
     def compute_qkv(self, x, context=None, rope_emb=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = self.q_proj(x)
         context = x if context is None else context
