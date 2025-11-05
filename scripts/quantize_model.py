@@ -29,9 +29,10 @@ import tqdm
 from megatron.core import parallel_state
 
 from cosmos_transfer2._src.imaginaire.utils import distributed, log, misc
-from cosmos_transfer2._src.predict2.inference.video2world import _VIDEO_EXTENSIONS
 from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
-from cosmos_transfer2.config import BASE_MODEL_VARIANTS, MODEL_CHECKPOINTS, ModelKey, ModelVariant, SetupArguments
+from cosmos_transfer2.config import (
+    BASE_MODEL_VARIANTS, DEFAULT_NEGATIVE_PROMPT, MODEL_CHECKPOINTS, ModelKey, ModelVariant, SetupArguments
+)
 from cosmos_transfer2.inference import Control2WorldInference
 
 SCRIPTS_ROOT = os.path.dirname(__file__)
@@ -41,8 +42,7 @@ DIT_PATH = "checkpoints/nvidia/Cosmos-Transfer2.5-2B/{domain}/{modality}/{checkp
 
 QUANTIZATION_MODES = {
     "FP8": mtq.FP8_DEFAULT_CFG,
-    # Quantize with SVDquant (NVFP4)
-    "NVFP4": mtq.NVFP4_SVDQUANT_DEFAULT_CFG,
+    "NVFP4": mtq.NVFP4_SVDQUANT_DEFAULT_CFG,  # Quantize with SVDquant for NVFP4
 }
 
 VARIANTS = [v.value for v in BASE_MODEL_VARIANTS] + [ModelVariant.AUTO_MULTIVIEW.value]  # TODO(rafonsorodri): add support for robot-domain variants upon their release
@@ -101,7 +101,7 @@ class CalibrationSample:
 
     @property
     def control_weights_str(self):
-        return ",".join([self.control_weights[k] for k in self.control_keys])
+        return ",".join([str(self.control_weights[k]) for k in self.control_keys])
 
     @classmethod
     def from_json(cls, data: dict, modality: str) -> Self:
@@ -117,8 +117,7 @@ class CalibrationSample:
             raise ValueError("Sample must specify a text prompt inplace (`prompt`) or as .txt (`prompt_path`).")
 
         # Parse input video
-        video_path = data.get("video_path")
-        if not prompt:
+        if not (video_path := data.get("video_path")):
             raise ValueError("Sample must specify an input video (`video_path`).")
         elif not os.path.exists(os.path.join(ASSETS_ROOT, video_path)):
             raise ValueError(f"Video file does not exist: {video_path}")
@@ -138,9 +137,9 @@ class CalibrationSample:
 
         return CalibrationSample(
             prompt=prompt,
-            video_path=video_path,
+            video_path=os.path.join(ASSETS_ROOT, video_path),
             control_keys=[modality],
-            control_paths={modality: control_path},
+            control_paths={modality: os.path.join(ASSETS_ROOT, control_path)},
             control_weights={modality: control_weight},
         )
 
@@ -247,26 +246,6 @@ def setup_pipeline(args: argparse.Namespace):
     return inference.inference_pipeline
 
 
-def validate_input_file(input_path: str, num_conditional_frames: int) -> bool:
-    if not os.path.exists(input_path):
-        log.warning(f"Input file does not exist, skipping: {input_path}")
-        return False
-
-    ext = os.path.splitext(input_path)[1].lower()
-    # Control only accept videos
-    if ext not in _VIDEO_EXTENSIONS:
-        log.warning(
-            f"Skipping file for control (requires video): {input_path} (expected: {_VIDEO_EXTENSIONS}, got: {ext})"
-        )
-        return False
-
-    if num_conditional_frames not in [1, 5]:
-        log.error(f"Invalid num_conditional_frames: {num_conditional_frames} (must be 1 or 5)")
-        return False
-
-    return True
-
-
 def process_single_generation(
     pipe: ControlVideo2WorldInference,
     input_path: str,
@@ -280,11 +259,6 @@ def process_single_generation(
     guidance: float,
     seed: int,
 ) -> bool:
-    # Validate input file
-    if not validate_input_file(input_path, num_conditional_frames):
-        log.warning(f"Input file validation failed: {input_path}")
-        return False
-
     log.info(f"Running ControlVideo2WorldInference"
              f"\n\tinput: {input_path}\n\tcontrol(s): {control_paths}\n\tprompt: {prompt}")
     start_time = time.time()
@@ -308,7 +282,6 @@ def process_single_generation(
 
 
 def generate_video(pipe: ControlVideo2WorldInference, inference_args: argparse.Namespace, samples: list[CalibrationSample]) -> None:
-    log.info(f"Running {inference_args.inference_type} generation")
     for idx in tqdm.trange(len(samples), disable=False, desc="Processing batch item"):
         sample = samples[idx]
 
@@ -319,7 +292,7 @@ def generate_video(pipe: ControlVideo2WorldInference, inference_args: argparse.N
             control_paths=sample.control_paths,
             control_weights=sample.control_weights_str,
             prompt=sample.prompt,
-            negative_prompt=inference_args.negative_prompt,
+            negative_prompt=DEFAULT_NEGATIVE_PROMPT,
             resolution=inference_args.resolution_hw,
             num_conditional_frames=inference_args.num_conditional_frames,
             guidance=inference_args.guidance,
