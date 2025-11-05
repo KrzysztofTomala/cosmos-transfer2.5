@@ -119,7 +119,8 @@ class CalibrationSample:
         # Parse input video
         if not (video_path := data.get("video_path")):
             raise ValueError("Sample must specify an input video (`video_path`).")
-        elif not os.path.exists(os.path.join(ASSETS_ROOT, video_path)):
+        video_path = os.path.join(ASSETS_ROOT, video_path)
+        if not os.path.exists(video_path):
             raise ValueError(f"Video file does not exist: {video_path}")
 
         # Parse control configuration
@@ -128,18 +129,22 @@ class CalibrationSample:
                              f' `{modality}.control_weight` and `{modality}.control_path` properties.')
 
         control_path = control_config.get("control_path")
-        if not os.path.exists(os.path.join(ASSETS_ROOT, control_path)):
+        if not control_path:
+            raise ValueError(f"Sample must specify a control video (`{modality}.control_path`). Use "
+                             f"`examples/inference.py` for online control computation.")
+        control_path = os.path.join(ASSETS_ROOT, control_path)
+        if not os.path.exists(control_path):
             raise ValueError(f"Control file does not exist: {control_path}")
 
-        control_weight = control_config.get("control_weight")
+        control_weight = control_config.get("control_weight", 1.0)
         if not isinstance(control_weight, int | float) or control_weight < 0.0:
             raise ValueError(f"Control weight must be non-negative: {control_weight}")
 
         return CalibrationSample(
             prompt=prompt,
-            video_path=os.path.join(ASSETS_ROOT, video_path),
+            video_path=video_path,
             control_keys=[modality],
-            control_paths={modality: os.path.join(ASSETS_ROOT, control_path)},
+            control_paths={modality: control_path},
             control_weights={modality: control_weight},
         )
 
@@ -308,7 +313,8 @@ def prepare_calibration_data(args: argparse.Namespace, quant_config) -> list[Cal
         dataset = []
         with open(args.calibration_dataset, 'rt') as fd:
             for line in fd.read().splitlines():
-                dataset.append(json.loads(line))
+                if line and not line.startswith("#"):
+                    dataset.append(json.loads(line))
     else:
         with open(args.calibration_dataset, 'rt') as fd:
             dataset = json.load(fd)
