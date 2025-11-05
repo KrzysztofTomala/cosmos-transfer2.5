@@ -26,69 +26,19 @@ import modelopt.torch.quantization as mtq
 import modelopt.torch.opt as mto
 import torch
 import tqdm
-from megatron.core import parallel_state
 
-from cosmos_transfer2._src.imaginaire.utils import distributed, log, misc
+from cosmos_transfer2._src.imaginaire.utils import distributed, log
 from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
-from cosmos_transfer2.config import (
-    BASE_MODEL_VARIANTS, DEFAULT_NEGATIVE_PROMPT, MODEL_CHECKPOINTS, ModelKey, ModelVariant, SetupArguments
+from cosmos_transfer2.config import DEFAULT_NEGATIVE_PROMPT
+from scripts.byoc_utils.pipeline import (
+    ASSETS_ROOT,
+    QUANTIZATION_MODES,
+    SCRIPTS_ROOT,
+    VARIANTS,
+    ModelMeta,
+    PipelineArgs,
+    setup_pipeline,
 )
-from cosmos_transfer2.inference import Control2WorldInference
-
-SCRIPTS_ROOT = os.path.dirname(__file__)
-ASSETS_ROOT = os.path.join(SCRIPTS_ROOT, "..", "assets")
-CONTROL2WORLD_ASSETS = os.path.join(ASSETS_ROOT, "{modality}.jsonl")
-DIT_PATH = "checkpoints/nvidia/Cosmos-Transfer2.5-2B/{domain}/{modality}/{checkpoint_name}"
-
-QUANTIZATION_MODES = {
-    "FP8": mtq.FP8_DEFAULT_CFG,
-    "NVFP4": mtq.NVFP4_SVDQUANT_DEFAULT_CFG,  # Quantize with SVDquant for NVFP4
-}
-
-VARIANTS = [v.value for v in BASE_MODEL_VARIANTS] + [ModelVariant.AUTO_MULTIVIEW.value]  # TODO(rafonsorodri): add support for robot-domain variants upon their release
-
-
-class ModelMeta:
-    def __init__(self, model_variant: ModelVariant):
-        self._variant = model_variant
-
-    @property
-    def variant(self):
-        return self._variant
-
-    @property
-    def domain(self):
-        tokens = self._variant.value.split('/')
-        if len(tokens) == 1:
-            return "general"
-        return tokens[0]
-
-    @property
-    def hint_key(self):
-        tokens = self._variant.value.split('/')
-        if len(tokens) == 1:
-            return tokens[0]
-        return tokens[1]
-
-    @property
-    def name(self):
-        return self._variant.value
-
-    @property
-    def safe_name(self):
-        return self.name.replace("/", "-")
-
-    @property
-    def calibration_dataset(self):
-        return CONTROL2WORLD_ASSETS.format(modality=self.safe_name)
-
-    @classmethod
-    def from_text(cls, value: str):
-        try:
-            model_variant = ModelVariant(value)
-        except ValueError as e:
-            raise ValueError(f"Choose either {VARIANTS}.") from e
-        return cls(model_variant)
 
 
 @dataclass
@@ -179,76 +129,6 @@ def make_parser():
 
 def calibration_samples_required(args: argparse.Namespace, quant_config: dict) -> int:
     return 1  # TODO(rafonsorodri): Adapt samples according to model size, resolution, FPS, NATTEN, quantized precision
-
-
-def setup_pipeline(args: argparse.Namespace):
-    log.info(f"Using model variant: {args.model.name}")
-    model_key = ModelKey(variant=args.model.variant)
-
-    if args.checkpoint_name:
-        checkpoint_path = DIT_PATH.format(
-            domain=args.model.domain, modality=args.model.hint_key, checkpoint_name=args.checkpoint_name)
-    else:
-        try:
-            model_checkpoint = MODEL_CHECKPOINTS[model_key]
-            checkpoint_path = model_checkpoint.path
-        except KeyError as e:
-            raise NotImplementedError(f"Model configuration not supported") from e
-        except ValueError as e:
-            # raised upon calling `.path` property if the checkpoint does not specify a HuggingFace location
-            raise NotImplementedError(f"No HF repository defined") from e
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Model checkpoint not found: {checkpoint_path}")
-
-    setup_args = SetupArguments.model_validate({
-        # Required parameters
-        "output_dir": args.output_dir,
-        # Optional parameters
-        "model": model_key.name,
-        "checkpoint_path": checkpoint_path,
-        "context_parallel_size": args.num_gpus,
-        "disable_guardrails": args.disable_guardrail,
-        "offload_guardrail_models": args.offload_guardrail,
-        "benchmark": args.benchmark,
-    })
-
-    if setup_args.benchmark:
-        log.warning(
-            "Running in benchmark mode. Each generation will be rerun a couple of times and the average generation "
-            "time will be shown."
-        )
-
-    misc.set_random_seed(seed=args.seed, by_rank=True)
-    # Initialize cuDNN.
-    torch.backends.cudnn.deterministic = False
-    torch.backends.cudnn.benchmark = True
-    # Floating-point precision settings.
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cuda.matmul.allow_tf32 = True
-
-    # Initialize distributed environment for multi-GPU inference
-    if hasattr(args, "num_gpus") and args.num_gpus > 1:
-        log.info(f"Initializing distributed environment with {args.num_gpus} GPUs for context parallelism")
-
-        # Check if distributed environment is already initialized
-        if not parallel_state.is_initialized():
-            distributed.init()
-            parallel_state.initialize_model_parallel(context_parallel_size=args.num_gpus)
-            log.info(f"Context parallel group initialized with {args.num_gpus} GPUs")
-        else:
-            log.info("Distributed environment already initialized, skipping initialization")
-            # Check if we need to reinitialize with different context parallel size
-            current_cp_size = parallel_state.get_context_parallel_world_size()
-            if current_cp_size != args.num_gpus:
-                log.warning(f"Context parallel size mismatch: current={current_cp_size}, requested={args.num_gpus}")
-                log.warning("Using existing context parallel configuration")
-            else:
-                log.info(f"Using existing context parallel group with {current_cp_size} GPUs")
-
-    # Load models
-    log.info(f"Initializing ControlVideo2WorldInference for model: {args.model.variant.name}")
-    inference = Control2WorldInference(setup_args, batch_hint_keys=[args.model.hint_key])
-    return inference.inference_pipeline
 
 
 def process_single_generation(
@@ -375,7 +255,7 @@ def main(cmdargs):
     model_meta = ModelMeta.from_text(cmdargs.model_variant)
 
     # Base args
-    with open(os.path.join(SCRIPTS_ROOT, "export_dit_onnx_args.json"), "rt") as f:
+    with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", "optim_dit_args.json"), "rt") as f:
         args: dict = json.load(f)
         args.update({
             "model": model_meta,
@@ -387,13 +267,13 @@ def main(cmdargs):
         })
     if cmdargs.num_gpus > 1:
         args["num_gpus"] = cmdargs.num_gpus
-    args: argparse.Namespace = argparse.Namespace(**args)
 
-    pipe = setup_pipeline(args)
+    pipeline_args = PipelineArgs(**args)
+    pipe = setup_pipeline(pipeline_args)
 
     quant_config = QUANTIZATION_MODES[cmdargs.mode.upper()]
-
-    dit_controlnet = calibrate_dit_denoiser(pipe, args, quant_config)
+    calib_args = argparse.Namespace(**args)
+    dit_controlnet = calibrate_dit_denoiser(pipe, calib_args, quant_config)
 
     # Save checkpoint and return quantized pipeline
     filename_noext = os.path.join(
