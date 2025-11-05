@@ -360,6 +360,8 @@ class Attention(nn.Module):
         self.v_proj = nn.Linear(context_dim, inner_dim, bias=False)
         self.v_norm = nn.Identity()
 
+        self.fused_qkv = False
+
         self.output_proj = nn.Linear(inner_dim, query_dim, bias=False)
         self.output_dropout = nn.Dropout(dropout) if dropout > 1e-4 else nn.Identity()
 
@@ -412,14 +414,21 @@ class Attention(nn.Module):
         del self.k_proj
         del self.v_proj
         self.q_proj = qkv_proj
+        self.fused_qkv = True
 
     def compute_qkv(self, x, context=None, rope_emb=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = self.q_proj(x)
-        context = x if context is None else context
-        k = self.k_proj(context)
-        v = self.v_proj(context)
+        if self.fused_qkv:
+            qkv = q.unflatten(-1, (3, self._inner_dim))
+            q = qkv[..., 0, :]
+            k = qkv[..., 1, :]
+            v = qkv[..., 2, :]
+        else:
+            context = x if context is None else context
+            k = self.k_proj(context)
+            v = self.v_proj(context)
         q, k, v = map(
-            lambda t: rearrange(t, "b ... (h d) -> b ... h d", h=self.n_heads, d=self.head_dim),
+            lambda t: t.unflatten(-1, (self.n_heads, self.head_dim)),  # "b ... (h d) -> b ... h d"
             (q, k, v),
         )
 
