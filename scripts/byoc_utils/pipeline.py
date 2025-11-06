@@ -14,13 +14,18 @@
 # limitations under the License.
 
 import os
+from dataclasses import dataclass
 
 import modelopt.torch.quantization as mtq
 import pydantic
 import torch
 from megatron.core import parallel_state
 
+
 from cosmos_transfer2._src.imaginaire.utils import distributed, log, misc
+from cosmos_transfer2._src.predict2.datasets.utils import VIDEO_RES_SIZE_INFO
+from cosmos_transfer2._src.predict2.text_encoders.text_encoder import NUM_EMBEDDING_PADDING_TOKENS
+from cosmos_transfer2._src.transfer2.configs.vid2vid_transfer.config import Config
 from cosmos_transfer2.config import BASE_MODEL_VARIANTS, MODEL_CHECKPOINTS, ModelKey, ModelVariant, SetupArguments
 from cosmos_transfer2.inference import Control2WorldInference
 
@@ -35,6 +40,20 @@ QUANTIZATION_MODES = {
 }
 # TODO(rafonsorodri): add support for robot-domain variants upon their release
 VARIANTS = [v.value for v in BASE_MODEL_VARIANTS] + [ModelVariant.AUTO_MULTIVIEW.value]
+
+
+@dataclass
+class ModelDimensions:
+    B: int = 1  # batch size
+    T: int = 1  # frames
+    N: int = 1  # sequence length
+    H: int = 1  # latent height
+    W: int = 1  # latent width
+    D: int = 1  # head dimension
+    HS: int = 1  # heads in SelfAttn
+    HX: int = 1  # heads in CrossAttn
+    BK: int = 1  # transformer base blocks
+    BC: int = 1  # transformer control blocks
 
 
 class ModelMeta:
@@ -107,7 +126,6 @@ class PipelineArgs(pydantic.BaseModel):
     """Base seed for PRN generation"""
 
 
-
 def setup_pipeline(args: PipelineArgs):
     log.info(f"Using model variant: {args.model.name}")
     model_key = ModelKey(variant=args.model.variant)
@@ -176,3 +194,25 @@ def setup_pipeline(args: PipelineArgs):
     log.info(f"Initializing ControlVideo2WorldInference for model: {args.model.variant.name}")
     inference = Control2WorldInference(setup_args, batch_hint_keys=[args.model.hint_key])
     return inference.inference_pipeline
+
+
+def get_model_dimensions(model_config: Config, resolution) -> ModelDimensions:
+    config = model_config.model.config
+    try:
+        resolution_hw = VIDEO_RES_SIZE_INFO[resolution]["9,16"]
+    except KeyError as e:
+        raise ValueError(f"Unsupported resolution. Choose either '480' or '720'.") from e
+
+    patch_size = config.text_encoder_config.model_config.model_config.vision_encoder_config.patch_size
+    return ModelDimensions(
+        B=1,
+        T=config.state_t,  # frame count
+        N=NUM_EMBEDDING_PADDING_TOKENS,  # CrossAttn seq len (the effective sequence length for text embeddings)
+        HX=config.net.num_heads,  # CrossAttn head count
+        HS=config.net.num_heads,  # SelfAttn head count
+        D=config.net.model_channels // config.net.num_heads,  # SelfAttn head dimension
+        H=resolution_hw[0] // patch_size,
+        W=resolution_hw[1] // patch_size,
+        BK=config.net.num_blocks,
+        BC=config.net.num_blocks // config.net.vace_block_every_n
+    )
