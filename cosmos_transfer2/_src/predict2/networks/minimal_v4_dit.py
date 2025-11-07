@@ -24,6 +24,7 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.amp as amp
+import torch.nn.functional as F
 import transformer_engine as te
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
@@ -223,6 +224,37 @@ class RMSNorm(torch.nn.Module):
         return output * self.weight
 
 
+class MultiheadAttentionOp(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q, k, v):
+        q_t = q.transpose(1, 2)  # B H S D
+        k_t = k.transpose(1, 2)  # B H S D
+        v_t = v.transpose(1, 2)  # B H S D
+        return F.scaled_dot_product_attention(q_t, k_t, v_t).transpose(1, 2).flatten(-2)  # B S (H D)
+
+    @staticmethod
+    def symbolic(g, q, k, v):
+        return g.op("Cosmos::MultiheadAttention", q, k, v)
+
+
+class ExportableAttention(torch.nn.Module):
+    def __init__(self, qkv_format: str):
+        super().__init__()
+        assert qkv_format.lower() == "bshd", \
+            "TRTLLM-exportable attention only supports B_S_H_D format. S_B_H_D should be transposed before calling"
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, **kwargs):
+        batch, seq_len, _, _ = q.shape
+        if seq_len == k.shape[1]:
+            # FMHA
+            return MultiheadAttentionOp.apply(q, k, v)
+        else:
+            # Cross attention
+            q, k, v = map(lambda t: t.transpose(1, 2), (q, k, v)) # "b s h d -> b h s d"
+            o = F.scaled_dot_product_attention(q, k, v)
+            return o.transpose(1, 2).flatten(-2) # "b h s d -> b s (h d)"
+
+
 # ---------------------- Feed Forward Network -----------------------
 class GPT2FeedForward(nn.Module):
     def __init__(self, d_model: int, d_ff: int):
@@ -282,10 +314,53 @@ def torch_attention_op(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D):
     k_B_H_S_D = rearrange(k_B_S_H_D, "b ... h v -> b h ... v").view(in_k_shape[0], in_k_shape[-2], -1, in_k_shape[-1])
     v_B_H_S_D = rearrange(v_B_S_H_D, "b ... h v -> b h ... v").view(in_k_shape[0], in_k_shape[-2], -1, in_k_shape[-1])
     result_B_S_HD = rearrange(
-        torch.nn.functional.scaled_dot_product_attention(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D), "b h ... l -> b ... (h l)"
+        F.scaled_dot_product_attention(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D), "b h ... l -> b ... (h l)"
     )
 
     return result_B_S_HD
+
+
+def torch_rope_emb(
+    t: torch.Tensor,
+    freqs: torch.Tensor,
+    tensor_format: str = "sbhd",
+) -> torch.Tensor:
+    """
+    Apply RoPE to the full sequence
+    t & freqs' dimensions must match
+    """
+
+    # [seq, 1, 1, dim] -> [1, seq, 1, dim] or
+    # [seq, b, 1, dim] -> [b, seq, 1, dim]
+    if tensor_format == "bshd":
+        freqs = freqs.transpose(0, 1)
+    # cos/sin first then dtype conversion for better precision
+    cos_ = torch.cos(freqs).to(t.dtype)
+    sin_ = torch.sin(freqs).to(t.dtype)
+
+    def _rotate_half(x: torch.Tensor, interleaved: bool) -> torch.Tensor:
+        """Change sign so the last dimension becomes [-odd, +even]
+
+        Args:
+            x: torch.Tensor. Input tensor.
+            interleaved: bool. Whether to use interleaved rotary position embedding.
+
+        Returns:
+            Tensor: Tensor rotated half.
+        """
+        if not interleaved:
+            x1, x2 = torch.chunk(x, 2, dim=-1)
+            return torch.cat((-x2, x1), dim=-1)
+
+        # interleaved
+        x1 = x[:, :, :, ::2]
+        x2 = x[:, :, :, 1::2]
+        x_new = torch.stack((-x2, x1), dim=-1)
+        return x_new.view(x_new.shape[0], x_new.shape[1], x_new.shape[2], -1)
+
+    # first part is cosine component
+    # second part is sine component, need to change signs with _rotate_half method
+    return (t * cos_) + (_rotate_half(t, interleaved=False) * sin_)
 
 
 class Attention(nn.Module):
@@ -360,7 +435,8 @@ class Attention(nn.Module):
         self.v_proj = nn.Linear(context_dim, inner_dim, bias=False)
         self.v_norm = nn.Identity()
 
-        self.fused_qkv = False
+        self._fused_qkv = False
+        self._exportable = False
 
         self.output_proj = nn.Linear(inner_dim, query_dim, bias=False)
         self.output_dropout = nn.Dropout(dropout) if dropout > 1e-4 else nn.Identity()
@@ -399,7 +475,43 @@ class Attention(nn.Module):
             if hasattr(layer, "reset_parameters"):
                 layer.reset_parameters()
 
+    def _exportable_attention(self):
+        self.attn_op = ExportableAttention(self.qkv_format)
+        self.backend = "torch"
+
+    def _exportable_norm(self):
+        q_norm = RMSNorm(self.head_dim, eps=1e-6)
+        k_norm = RMSNorm(self.head_dim, eps=1e-6)
+        with torch.no_grad():
+            q_norm.to(self.q_norm.weight.device)
+            q_norm.to(self.q_norm.weight.dtype)
+            k_norm.to(self.k_norm.weight.device)
+            k_norm.to(self.k_norm.weight.dtype)
+            q_norm.weight.copy_(self.q_norm.weight)
+            k_norm.weight.copy_(self.k_norm.weight)
+        del self.q_norm
+        del self.k_norm
+        self.q_norm = q_norm
+        self.k_norm = k_norm
+
+    def _exportable_rope(self):
+        self.rope_fn = lambda t, freq: torch_rope_emb(t, freq, tensor_format=self.qkv_format)
+
+    def prepare_for_export(self, attention: bool = True, norm: bool = True, rope: bool = True):
+        """Prepare module for export onto platforms that may not support non-pytorch implementations, (e.g. TRT)"""
+        if self._exportable:
+            return
+        if attention:
+            self._exportable_attention()
+        if norm:
+            self._exportable_norm()
+        if rope:
+            self._exportable_rope()
+        self._exportable = True
+
     def fuse_qkv_proj(self) -> None:
+        if self._fused_qkv:
+            return
         assert self.is_selfattn, "Only self-attention supports fusing QKV"
         assert self.q_proj.bias is None, "QKV proj bias is not supported"
         assert self.k_proj.bias is None, "QKV proj bias is not supported"
@@ -414,11 +526,11 @@ class Attention(nn.Module):
         del self.k_proj
         del self.v_proj
         self.q_proj = qkv_proj
-        self.fused_qkv = True
+        self._fused_qkv = True
 
     def compute_qkv(self, x, context=None, rope_emb=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = self.q_proj(x)
-        if self.fused_qkv:
+        if self._fused_qkv:
             qkv = q.unflatten(-1, (3, self._inner_dim))
             q = qkv[..., 0, :]
             k = qkv[..., 1, :]

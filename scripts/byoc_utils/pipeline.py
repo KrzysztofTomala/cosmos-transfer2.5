@@ -102,7 +102,7 @@ class ModelMeta:
 class PipelineArgs(pydantic.BaseModel):
     """Common arguments for pipeline setup."""
 
-    model_config = pydantic.ConfigDict(extra="ignore", frozen=True)
+    model_config = pydantic.ConfigDict(extra="ignore", frozen=True, arbitrary_types_allowed=True)
 
     # Required parameters
     output_dir: str
@@ -118,7 +118,7 @@ class PipelineArgs(pydantic.BaseModel):
     """Number of available GPUs."""
     disable_guardrail: bool = False
     """Whether to disable model guardrails."""
-    offload_guardrail_models: bool = True
+    offload_guardrail: bool = True
     """Offload guardrail models to CPU to save GPU memory."""
     benchmark: bool = False
     """Enable benchmarking mode. Runs the single video processing 4 times and reports average of last 3 runs."""

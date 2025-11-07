@@ -36,8 +36,8 @@ def make_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_variant", choices=VARIANTS, required=True, type=str,
                         help="Model variant to use for control-video-to-world generation")
-    parser.add_argument("--output_dir", type=str, help="Folder to export ONNX files to.")
-    parser.add_argument("--modelopt_model", type=str, help="Path to ModelOPT-quantized checkpoint.")
+    parser.add_argument("--modelopt_model", type=str, required=True, help="Path to ModelOPT-quantized checkpoint.")
+    parser.add_argument("--output_dir", type=str, default="output", help="Folder to export ONNX files to.")
     parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
                         help="Quantization mode (FP8 or NVFP4)")
     # parser.add_argument("--nunchaku", action="store_true",
@@ -109,7 +109,7 @@ class ControlTracedDitBlock(torch.nn.Module):
 
 
 # TODO(rafonsorodri): add support for NVFP4
-def export_dit_onnx(dims: ModelDimensions, dit_controlnet, cmdargs):
+def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmdargs):
     # Fuse QKV projection
     for block in dit_controlnet.blocks + dit_controlnet.control_blocks:
         block.self_attn.fuse_qkv_proj()  # self-attention only, cross-attention has Sq != Sk
@@ -131,7 +131,7 @@ def export_dit_onnx(dims: ModelDimensions, dit_controlnet, cmdargs):
     hints = (hint_B_T_H_W_D,) * dims.BC
     control_context_scale = 1.0
 
-    onnx_dir = os.path.join(cmdargs.output_dir, f"onnx_{cmdargs.model.safe_name}_2B_{cmdargs.mode}")
+    onnx_dir = os.path.join(cmdargs.output_dir, f"onnx_{model.safe_name}_2B_{cmdargs.mode}")
     os.makedirs(onnx_dir, exist_ok=True)
 
     # Export regular DiT blocks
@@ -171,19 +171,15 @@ def export_block_as_onnx(
     is_control: bool
 ) -> Any:
 
-    block_type = "controlnet" if is_control else "net"
-    onnx_file = os.path.join(onnx_dir,  f"cosmos_transfer2.5_{block_type}_block{bidx}.onnx")
-
     # Prepare block
     wrapper_class = ControlTracedDitBlock if is_control else RegularTracedDitBlock
     block = wrapper_class(block)
     block.cuda()
     block.eval()
-    block.block.self_attn.export_attn()
-    block.block.self_attn.export_norm()
-    block.block.self_attn.export_rope()
-    block.block.cross_attn.export_attn()
-    block.block.cross_attn.export_norm()
+
+    # Switch TE implementations with native PyTorch
+    block.block.self_attn.prepare_for_export()
+    block.block.cross_attn.prepare_for_export()
 
     # Call forward on random inputs
     inputs = tuple(input_dict.values())
@@ -191,6 +187,7 @@ def export_block_as_onnx(
     outputs = block(*inputs)
 
     # Export to ONNX
+    onnx_file = os.path.join(onnx_dir,  f"cosmos_transfer2.5_{'controlnet' if is_control else 'net'}_block{bidx}.onnx")
     with torch.inference_mode():
         torch.onnx.export(
             block,
@@ -214,17 +211,16 @@ def main(cmdargs):
     args.update({
         "model": model_meta,
         "output_dir": cmdargs.output_dir,
-        "model_size": cmdargs.model_size,
         "resolution": cmdargs.resolution,
         "disable_guardrail": True,
     })
 
     pipe = setup_pipeline(PipelineArgs(**args))
     dims = get_model_dimensions(pipe.config, cmdargs.resolution)
-    dit_controlnet = pipe.dit
+    dit_controlnet = pipe.model.net
     del pipe
 
-    export_dit_onnx(dims, dit_controlnet, cmdargs)
+    export_dit_onnx(model_meta, dims, dit_controlnet, cmdargs)
 
 
 if __name__ == "__main__":
