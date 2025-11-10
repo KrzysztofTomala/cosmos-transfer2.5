@@ -36,7 +36,7 @@ def make_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_variant", choices=VARIANTS, required=True, type=str,
                         help="Model variant to use for control-video-to-world generation")
-    parser.add_argument("--modelopt_model", type=str, required=True, help="Path to ModelOPT-quantized checkpoint.")
+    parser.add_argument("--modelopt_checkpoint", type=str, required=True, help="Path to ModelOPT-quantized checkpoint.")
     parser.add_argument("--output_dir", type=str, default="output", help="Folder to export ONNX files to.")
     parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
                         help="Quantization mode (FP8 or NVFP4)")
@@ -48,25 +48,22 @@ def make_parser():
 
 
 COMMON_DYNAMIC_AXES = {
-    'x_B_T_H_W_D': {1: 'T', 2: 'H', 3: 'W'},
-    'emb_B_T_D': {1: 'T'},
-    'crossattn_emb': {1: 'N'},
-    'rope_emb_T_H_W_1_1_D': {0: 'T', 1: 'H', 2: 'W'},
-    'adaln_lora_B_T_3D': {1: 'T'},
+    'x_B_T_H_W_D': {2: 'H', 3: 'W'},
+    'rope_emb_T_H_W_1_1_D': {1: 'H', 2: 'W'},
 }
 REGULAR_DYNAMIC_AXES = {
-    "hints": {1: 'T', 2: 'H', 3: 'W'},
-    "output": {1: 'T', 2: 'H', 3: 'W'},
+    "hints": {3: 'H', 4: 'W'},  # Assume a stacked tensor rather that a list of control outputs
+    "output": {2: 'H', 3: 'W'},
     **COMMON_DYNAMIC_AXES
 }
 CONTROL_DYNAMIC_AXES_0 = {
-    "c": {1: 'T', 2: 'H', 3: 'W'},
-    "output": {2: 'T', 3: 'H', 4: 'W'},  # Control blocks stack outputs
+    "c": {2: 'H', 3: 'W'},
+    "output": {3: 'H', 4: 'W'},  # Control blocks stack outputs
     **COMMON_DYNAMIC_AXES
 }
 CONTROL_DYNAMIC_AXES_N = {
-    "c": {2: 'T', 3: 'H', 4: 'W'},  # shape becomes [bidx+1, B, T, H, W, D]
-    "output": {2: 'T', 3: 'H', 4: 'W'},  # Control blocks stack outputs
+    "c": {3: 'H', 4: 'W'},  # shape becomes [bidx+1, B, T, H, W, D]
+    "output": {3: 'H', 4: 'W'},  # Control blocks stack outputs
     **COMMON_DYNAMIC_AXES
 }
 
@@ -81,8 +78,8 @@ class RegularTracedDitBlock(torch.nn.Module):
         rope_emb_L_1_1_D = rope_emb_T_H_W_1_1_D.flatten(0, 2)
         return self.block(
             x_B_T_H_W_D,
-            hints,
-            control_context_scale,
+            torch.unbind(hints),
+            control_context_scale.item(),
             emb_B_T_D=emb_B_T_D,
             crossattn_emb=crossattn_emb,
             rope_emb_L_1_1_D=rope_emb_L_1_1_D,
@@ -115,21 +112,20 @@ def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmd
         block.self_attn.fuse_qkv_proj()  # self-attention only, cross-attention has Sq != Sk
 
     # ModelOPT quantization schema
-    assert os.path.exists(cmdargs.modelopt_model), "ModelOPT-quantized checkpoint not found"
-    mto.restore(dit_controlnet, cmdargs.modelopt_model)
+    assert os.path.exists(cmdargs.modelopt_checkpoint), "ModelOPT-quantized checkpoint not found"
+    mto.restore(dit_controlnet, cmdargs.modelopt_checkpoint)
 
     def _make(shape):
         return torch.randn(shape, requires_grad=False, device="cuda", dtype=torch.bfloat16)
 
-    x_B_T_H_W_D = _make((dims.B, dims.T, dims.H, dims.W, dims.HS*dims.D))
-    control_B_T_H_W_D = _make((dims.B, dims.T, dims.H, dims.W, dims.HS*dims.D))
-    hint_B_T_H_W_D = _make((dims.B, dims.T, dims.H, dims.W, dims.HS*dims.D))
-    emb_B_T_D = _make((dims.B, dims.T, dims.HS*dims.D))
-    crossattn_emb = _make((dims.B, dims.N, dims.HX*dims.D))
-    rope_emb_T_H_W_1_1_D = _make((dims.T, dims.H, dims.W, 1, 1, dims.D)).float()
-    adaln_lora_B_T_3D = _make((dims.B, dims.T, 3*dims.HS*dims.D))
-    hints = (hint_B_T_H_W_D,) * dims.BC
-    control_context_scale = 1.0
+    x_B_T_H_W_D = _make((dims.B, dims.T, dims.H, dims.W, dims.HS*dims.DS))
+    control_B_T_H_W_D = _make((dims.B, dims.T, dims.H, dims.W, dims.HS*dims.DS))
+    hints = _make((dims.BC, dims.B, dims.T, dims.H, dims.W, dims.HS*dims.DS))
+    emb_B_T_D = _make((dims.B, dims.T, dims.HS*dims.DS)).float()
+    crossattn_emb = _make((dims.B, dims.N, dims.HX*dims.DX))
+    rope_emb_T_H_W_1_1_D = _make((dims.T, dims.H, dims.W, 1, 1, dims.DS)).float()
+    adaln_lora_B_T_3D = _make((dims.B, dims.T, 3*dims.HS*dims.DS)).float()
+    control_context_scale = torch.ones((1,), requires_grad=False, device="cuda").float()
 
     onnx_dir = os.path.join(cmdargs.output_dir, f"onnx_{model.safe_name}_2B_{cmdargs.mode}")
     os.makedirs(onnx_dir, exist_ok=True)
@@ -197,7 +193,7 @@ def export_block_as_onnx(
             autograd_inlining=False,
             input_names=names,
             output_names=['output'],
-            dynamic_axes={n: dynamic_axes_dict[n] for n in names},
+            dynamic_axes={n: dynamic_axes_dict[n] for n in names if n in dynamic_axes_dict},
         )
 
     return outputs

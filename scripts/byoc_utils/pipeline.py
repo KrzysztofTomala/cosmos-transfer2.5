@@ -49,7 +49,8 @@ class ModelDimensions:
     N: int = 1  # sequence length
     H: int = 1  # latent height
     W: int = 1  # latent width
-    D: int = 1  # head dimension
+    DS: int = 1  # head dimension in SelfAttn
+    DX: int = 1  # head dimension in CrossAttn
     HS: int = 1  # heads in SelfAttn
     HX: int = 1  # heads in CrossAttn
     BK: int = 1  # transformer base blocks
@@ -208,9 +209,10 @@ def get_model_dimensions(model_config: Config, resolution) -> ModelDimensions:
         B=1,
         T=config.state_t,  # frame count
         N=NUM_EMBEDDING_PADDING_TOKENS,  # CrossAttn seq len (the effective sequence length for text embeddings)
-        HX=config.net.num_heads,  # CrossAttn head count
         HS=config.net.num_heads,  # SelfAttn head count
-        D=config.net.model_channels // config.net.num_heads,  # SelfAttn head dimension
+        HX=config.net.num_heads,  # CrossAttn head count
+        DS=config.net.model_channels // config.net.num_heads,  # SelfAttn head dimension
+        DX=config.net.crossattn_emb_channels // config.net.num_heads,  # CrossAttn head dimension
         H=resolution_hw[0] // patch_size,
         W=resolution_hw[1] // patch_size,
         BK=config.net.num_blocks,

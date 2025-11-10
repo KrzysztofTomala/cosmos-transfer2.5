@@ -441,6 +441,8 @@ class Attention(nn.Module):
         self.output_proj = nn.Linear(inner_dim, query_dim, bias=False)
         self.output_dropout = nn.Dropout(dropout) if dropout > 1e-4 else nn.Identity()
 
+        self.rope_fn = lambda t, freq: apply_rotary_pos_emb(t, freq, tensor_format=self.qkv_format, fused=True)
+
         if self.backend == "transformer_engine":
             from transformer_engine.pytorch.attention import DotProductAttention
 
@@ -552,8 +554,11 @@ class Attention(nn.Module):
                 if self.use_wan_fp32_strategy:  # wan will force q and k to fp32 before rotary pos emb
                     q = q.to(torch.float32)
                     k = k.to(torch.float32)
-                q = apply_rotary_pos_emb(q, rope_emb, tensor_format=self.qkv_format, fused=True)
-                k = apply_rotary_pos_emb(k, rope_emb, tensor_format=self.qkv_format, fused=True)
+                q = self.rope_fn(q, rope_emb)
+                k = self.rope_fn(k, rope_emb)
+                if self._exportable and self.use_wan_fp32_strategy:
+                    q = q.to(v.dtype)
+                    k = k.to(v.dtype)
             return q, k, v
 
         q, k, v = apply_norm_and_rotary_pos_emb(q, k, v, rope_emb)
