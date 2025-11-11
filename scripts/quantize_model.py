@@ -80,11 +80,15 @@ class CalibrationSample:
 
         control_path = control_config.get("control_path")
         if not control_path:
-            raise ValueError(f"Sample must specify a control video (`{modality}.control_path`). Use "
-                             f"`examples/inference.py` for online control computation.")
-        control_path = os.path.join(ASSETS_ROOT, control_path)
-        if not os.path.exists(control_path):
-            raise ValueError(f"Control file does not exist: {control_path}")
+            if modality in ["edge", "vis"]:
+                log.warning(f"To compute {modality} control for sample online.")
+            else:
+                raise ValueError(f"Sample must specify a control video (`{modality}.control_path`). Use "
+                                 f"`examples/inference.py` for online control computation.")
+        else:
+            control_path = os.path.join(ASSETS_ROOT, control_path)
+            if not os.path.exists(control_path):
+                raise ValueError(f"Control file does not exist: {control_path}")
 
         control_weight = control_config.get("control_weight", 1.0)
         if not isinstance(control_weight, int | float) or control_weight < 0.0:
