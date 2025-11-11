@@ -194,6 +194,7 @@ def export_block_as_onnx(
             input_names=names,
             output_names=['output'],
             dynamic_axes={n: dynamic_axes_dict[n] for n in names if n in dynamic_axes_dict},
+            dynamo=False,
         )
 
     return outputs
