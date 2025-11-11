@@ -14,90 +14,23 @@
 # limitations under the License.
 
 import os
-from dataclasses import dataclass
 
 import modelopt.torch.quantization as mtq
 import pydantic
 import torch
 from megatron.core import parallel_state
 
-
 from cosmos_transfer2._src.imaginaire.utils import distributed, log, misc
-from cosmos_transfer2._src.predict2.datasets.utils import VIDEO_RES_SIZE_INFO
-from cosmos_transfer2._src.predict2.text_encoders.text_encoder import NUM_EMBEDDING_PADDING_TOKENS
-from cosmos_transfer2._src.transfer2.configs.vid2vid_transfer.config import Config
-from cosmos_transfer2.config import BASE_MODEL_VARIANTS, MODEL_CHECKPOINTS, ModelKey, ModelVariant, SetupArguments
+from cosmos_transfer2.config import MODEL_CHECKPOINTS, ModelKey, SetupArguments
 from cosmos_transfer2.inference import Control2WorldInference
+from scripts.byoc_utils.model import ModelMeta
 
-SCRIPTS_ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
-ASSETS_ROOT = os.path.realpath(os.path.join(SCRIPTS_ROOT, "..", "assets"))
-CONTROL2WORLD_ASSETS = os.path.join(ASSETS_ROOT, "{modality}.jsonl")
 DIT_PATH = "checkpoints/nvidia/Cosmos-Transfer2.5-2B/{domain}/{modality}/{checkpoint_name}"
 
 QUANTIZATION_MODES = {
     "FP8": mtq.FP8_DEFAULT_CFG,
     "NVFP4": mtq.NVFP4_SVDQUANT_DEFAULT_CFG,  # Quantize with SVDquant for NVFP4
 }
-# TODO(rafonsorodri): add support for robot-domain variants upon their release
-VARIANTS = [v.value for v in BASE_MODEL_VARIANTS] + [ModelVariant.AUTO_MULTIVIEW.value]
-
-
-@dataclass
-class ModelDimensions:
-    B: int = 1  # batch size
-    T: int = 1  # frames
-    N: int = 1  # sequence length
-    H: int = 1  # latent height
-    W: int = 1  # latent width
-    DS: int = 1  # head dimension in SelfAttn
-    DX: int = 1  # head dimension in CrossAttn
-    HS: int = 1  # heads in SelfAttn
-    HX: int = 1  # heads in CrossAttn
-    BK: int = 1  # transformer base blocks
-    BC: int = 1  # transformer control blocks
-
-
-class ModelMeta:
-    def __init__(self, model_variant: ModelVariant):
-        self._variant = model_variant
-
-    @property
-    def variant(self):
-        return self._variant
-
-    @property
-    def domain(self):
-        tokens = self._variant.value.split('/')
-        if len(tokens) == 1:
-            return "general"
-        return tokens[0]
-
-    @property
-    def hint_key(self):
-        tokens = self._variant.value.split('/')
-        if len(tokens) == 1:
-            return tokens[0]
-        return tokens[1]
-
-    @property
-    def name(self):
-        return self._variant.value
-
-    @property
-    def safe_name(self):
-        return self.name.replace("/", "-")
-
-    @property
-    def calibration_dataset(self):
-        return CONTROL2WORLD_ASSETS.format(modality=self.safe_name)
-
-    @classmethod
-    def from_text(cls, value: str):
-        try:
-            model_variant = ModelVariant(value)
-        except ValueError as e:
-            raise ValueError(f"Choose either {VARIANTS}.") from e
-        return cls(model_variant)
 
 
 class PipelineArgs(pydantic.BaseModel):
@@ -195,26 +128,3 @@ def setup_pipeline(args: PipelineArgs):
     log.info(f"Initializing ControlVideo2WorldInference for model: {args.model.variant.name}")
     inference = Control2WorldInference(setup_args, batch_hint_keys=[args.model.hint_key])
     return inference.inference_pipeline
-
-
-def get_model_dimensions(model_config: Config, resolution) -> ModelDimensions:
-    config = model_config.model.config
-    try:
-        resolution_hw = VIDEO_RES_SIZE_INFO[resolution]["9,16"]
-    except KeyError as e:
-        raise ValueError(f"Unsupported resolution. Choose either '480' or '720'.") from e
-
-    patch_size = config.text_encoder_config.model_config.model_config.vision_encoder_config.patch_size
-    return ModelDimensions(
-        B=1,
-        T=config.state_t,  # frame count
-        N=NUM_EMBEDDING_PADDING_TOKENS,  # CrossAttn seq len (the effective sequence length for text embeddings)
-        HS=config.net.num_heads,  # SelfAttn head count
-        HX=config.net.num_heads,  # CrossAttn head count
-        DS=config.net.model_channels // config.net.num_heads,  # SelfAttn head dimension
-        DX=config.net.crossattn_emb_channels // config.net.num_heads,  # CrossAttn head dimension
-        H=resolution_hw[0] // patch_size,
-        W=resolution_hw[1] // patch_size,
-        BK=config.net.num_blocks,
-        BC=config.net.num_blocks // config.net.vace_block_every_n
-    )

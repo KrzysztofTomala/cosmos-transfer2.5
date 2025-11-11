@@ -27,7 +27,8 @@ from cosmos_transfer2._src.transfer2.networks.minimal_v4_lvg_dit_control_vace im
     ControlAwareDiTBlock,
     ControlEncoderDiTBlock,
 )
-from scripts.byoc_utils.pipeline import SCRIPTS_ROOT, PipelineArgs, ModelDimensions, get_model_dimensions
+from scripts.byoc_utils.model import SCRIPTS_ROOT, ModelDimensions, get_model_dimensions, make_dummy_tensors
+from scripts.byoc_utils.pipeline import PipelineArgs
 from scripts.quantize_model import QUANTIZATION_MODES, VARIANTS, ModelMeta, setup_pipeline
 
 
@@ -115,44 +116,34 @@ def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmd
     assert os.path.exists(cmdargs.modelopt_checkpoint), "ModelOPT-quantized checkpoint not found"
     mto.restore(dit_controlnet, cmdargs.modelopt_checkpoint)
 
-    def _make(shape):
-        return torch.randn(shape, requires_grad=False, device="cuda", dtype=torch.bfloat16)
-
-    x_B_T_H_W_D = _make((dims.B, dims.T, dims.H, dims.W, dims.HS*dims.DS))
-    control_B_T_H_W_D = _make((dims.B, dims.T, dims.H, dims.W, dims.HS*dims.DS))
-    hints = _make((dims.BC, dims.B, dims.T, dims.H, dims.W, dims.HS*dims.DS))
-    emb_B_T_D = _make((dims.B, dims.T, dims.HS*dims.DS)).float()
-    crossattn_emb = _make((dims.B, dims.N, dims.HX*dims.DX))
-    rope_emb_T_H_W_1_1_D = _make((dims.T, dims.H, dims.W, 1, 1, dims.DS)).float()
-    adaln_lora_B_T_3D = _make((dims.B, dims.T, 3*dims.HS*dims.DS)).float()
-    control_context_scale = torch.ones((1,), requires_grad=False, device="cuda").float()
+    dummy_tensors = make_dummy_tensors(dims)
 
     onnx_dir = os.path.join(cmdargs.output_dir, f"onnx_{model.safe_name}_2B_{cmdargs.mode}")
     os.makedirs(onnx_dir, exist_ok=True)
 
     # Export regular DiT blocks
     inputs = {
-        "x_B_T_H_W_D": x_B_T_H_W_D,
-        "hints": hints,
-        "control_context_scale": control_context_scale,
-        "emb_B_T_D": emb_B_T_D,
-        "crossattn_emb": crossattn_emb,
-        "rope_emb_T_H_W_1_1_D": rope_emb_T_H_W_1_1_D,
-        "adaln_lora_B_T_3D": adaln_lora_B_T_3D,
+        "x_B_T_H_W_D": dummy_tensors["x_B_T_H_W_D"],
+        "hints": dummy_tensors["hints"],
+        "control_context_scale": dummy_tensors["control_context_scale"],
+        "emb_B_T_D": dummy_tensors["emb_B_T_D"],
+        "crossattn_emb": dummy_tensors["crossattn_emb"],
+        "rope_emb_T_H_W_1_1_D": dummy_tensors["rope_emb_T_H_W_1_1_D"],
+        "adaln_lora_B_T_3D": dummy_tensors["adaln_lora_B_T_3D"],
     }
     for bidx in tqdm.trange(dims.BK, disable=False, desc="Exporting base block to ONNX"):
         export_block_as_onnx(onnx_dir, inputs, REGULAR_DYNAMIC_AXES, bidx, dit_controlnet.blocks[bidx], False)
 
     # Export control DiT blocks
-    c = control_B_T_H_W_D
+    c = dummy_tensors["control_B_T_H_W_D"]
     for bidx in tqdm.trange(dims.BC, disable=False, desc="Exporting control block to ONNX"):
         inputs = {
             "c": c,
-            "x_B_T_H_W_D": x_B_T_H_W_D,
-            "emb_B_T_D": emb_B_T_D,
-            "crossattn_emb": crossattn_emb,
-            "rope_emb_T_H_W_1_1_D": rope_emb_T_H_W_1_1_D,
-            "adaln_lora_B_T_3D": adaln_lora_B_T_3D,
+            "x_B_T_H_W_D": dummy_tensors["x_B_T_H_W_D"],
+            "emb_B_T_D": dummy_tensors["emb_B_T_D"],
+            "crossattn_emb": dummy_tensors["crossattn_emb"],
+            "rope_emb_T_H_W_1_1_D": dummy_tensors["rope_emb_T_H_W_1_1_D"],
+            "adaln_lora_B_T_3D": dummy_tensors["adaln_lora_B_T_3D"],
         }
         dynamic_axes = CONTROL_DYNAMIC_AXES_0 if bidx == 0 else CONTROL_DYNAMIC_AXES_N
         c = export_block_as_onnx(onnx_dir, inputs, dynamic_axes, bidx, dit_controlnet.control_blocks[bidx], True)

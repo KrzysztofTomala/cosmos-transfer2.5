@@ -30,15 +30,8 @@ import tqdm
 from cosmos_transfer2._src.imaginaire.utils import distributed, log
 from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
 from cosmos_transfer2.config import DEFAULT_NEGATIVE_PROMPT
-from scripts.byoc_utils.pipeline import (
-    ASSETS_ROOT,
-    QUANTIZATION_MODES,
-    SCRIPTS_ROOT,
-    VARIANTS,
-    ModelMeta,
-    PipelineArgs,
-    setup_pipeline,
-)
+from scripts.byoc_utils.model import ASSETS_ROOT, SCRIPTS_ROOT, VARIANTS
+from scripts.byoc_utils.pipeline import QUANTIZATION_MODES, ModelMeta, PipelineArgs, setup_pipeline
 
 
 @dataclass
