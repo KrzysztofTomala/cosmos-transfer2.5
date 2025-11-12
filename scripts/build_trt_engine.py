@@ -128,7 +128,7 @@ class CosmosTRTEngineBuilder:
             register_input("c", c)
             for key in FIXED_CONTROL_INPUTS:
                 register_input(key, dummy_tensors[key])
-            register_output('output', dummy_tensors["output_hints"][:block_index+1])
+            register_output('output', dummy_tensors["output_hints"][:block_index+2])
         else:
             for key in FIXED_INPUTS:
                 register_input(key, dummy_tensors[key])

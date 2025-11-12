@@ -59,12 +59,12 @@ REGULAR_DYNAMIC_AXES = {
 }
 CONTROL_DYNAMIC_AXES_0 = {
     "c": {2: 'H', 3: 'W'},
-    "output": {3: 'H', 4: 'W'},  # Control blocks stack outputs
+    "output": {3: 'H', 4: 'W'},  # Control blocks stack outputs of shape [bidx+2, B, T, H, W, D]
     **COMMON_DYNAMIC_AXES
 }
 CONTROL_DYNAMIC_AXES_N = {
     "c": {3: 'H', 4: 'W'},  # shape becomes [bidx+1, B, T, H, W, D]
-    "output": {3: 'H', 4: 'W'},  # Control blocks stack outputs
+    "output": {3: 'H', 4: 'W'},  # Control blocks stack outputs of shape [bidx+2, B, T, H, W, D]
     **COMMON_DYNAMIC_AXES
 }
 

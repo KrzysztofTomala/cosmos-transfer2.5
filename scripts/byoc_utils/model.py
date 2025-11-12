@@ -199,6 +199,7 @@ def make_dummy_tensors(dims: ModelDimensions, with_outputs: bool = False) -> dic
 
     if with_outputs:
         tensors["output_B_T_H_W_D"] = torch.empty_like(_make("x_B_T_H_W_D"))
-        tensors["output_hints"] = torch.empty_like(_make("hints"))
+        tensor = torch.empty_like(_make("control_B_T_H_W_D"))
+        tensors["output_hints"] = tensor.unsqueeze(0).repeat_interleave(dims.BC + 1, dim=0)
 
     return tensors

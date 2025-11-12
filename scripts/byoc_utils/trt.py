@@ -89,7 +89,7 @@ def trt_engine_from_onnx_block(
 ):
     resolution_bounds = (min(dims.H, dims.W), max(dims.H, dims.W))
     bounds = explicit_bounds or OperationalBounds(
-        T_MIN=1,
+        T_MIN=dims.T,
         T_MAX=dims.T,
         H_MIN=resolution_bounds[0],
         W_MIN=resolution_bounds[0],
@@ -143,11 +143,9 @@ def optimization_profile_control_block(trt_builder, block_index: int, dims: Mode
     for key in FIXED_CONTROL_INPUTS:
         profile.set_shape(key, **shapes_from_spec(SHAPE_SPECS[key], dims, bounds))
 
-    if block_index == 0:
-        c_shape = SHAPE_SPECS["control_B_T_H_W_D"]
-    else:
-        c_shape = SHAPE_SPECS["hints"]
-        c_shape[0] = str(block_index)
+    c_shape = SHAPE_SPECS["control_B_T_H_W_D"]
+    if block_index > 0:
+        c_shape.insert(0, str(block_index+1))
     profile.set_shape("c", **shapes_from_spec(c_shape, dims, bounds))
 
     return profile
