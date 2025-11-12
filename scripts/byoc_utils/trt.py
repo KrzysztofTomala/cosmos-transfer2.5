@@ -115,9 +115,10 @@ def trt_engine_from_onnx_block(
     status = parser.parse_from_file(onnx_path)
 
     if not status:
-        log.error("Failed to read ONNX")
+        log.error("Failed to read ONNX due to:")
         for ierr in range(parser.num_errors):
-            log.error(f'{parser.get_error(ierr)}')
+            log.error(f'- {parser.get_error(ierr)}')
+        raise RuntimeError("Failed to build TRT engine (see logs for details)")
 
     # Build engine
     log.info("Building TRT engine from ONNX")

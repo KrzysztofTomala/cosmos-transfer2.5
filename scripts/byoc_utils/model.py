@@ -47,7 +47,7 @@ FIXED_CONTROL_INPUTS.remove("control_context_scale")
 SHAPE_SPECS = {
     "x_B_T_H_W_D": ["B", "T", "H", "W", "HS*DS"],
     "control_B_T_H_W_D": ["B", "T", "H", "W", "HS*DS"],
-    "hints": ["BS", "B", "T", "H", "W", "HS*DS"],
+    "hints": ["BC", "B", "T", "H", "W", "HS*DS"],
     "emb_B_T_D": ["B", "T", "HS*DS"],
     "crossattn_emb": ["B", "T", "HX*DX"],
     "rope_emb_T_H_W_1_1_D": ["T", "H", "W", "1", "1", "DS"],
@@ -157,7 +157,7 @@ def get_model_dimensions(model_config: Config, resolution) -> ModelDimensions:
     )
 
 
-def shapes_from_spec(spec: list, dims: ModelDimensions, bounds: OperationalBounds | None = None) -> dict[str, list]:
+def shapes_from_spec(spec: list, dims: ModelDimensions, bounds: OperationalBounds | None = None) -> dict[str, tuple]:
     opt_idx = 0
     min_idx = 1
     max_idx = 2
@@ -165,16 +165,17 @@ def shapes_from_spec(spec: list, dims: ModelDimensions, bounds: OperationalBound
     shapes = torch.ones((3, len(spec)))
     for i, dim in enumerate(spec):
         for subdim in dim.split('*'):
-            base = getattr(dims, subdim, int(subdim))
+            base = getattr(dims, subdim, None) or int(subdim)
             shapes[:, i] *= base
             if bounds and subdim in bounds:
                 shapes[min_idx, i] *= getattr(bounds, f"{subdim}_MIN") / base
                 shapes[max_idx, i] *= getattr(bounds, f"{subdim}_MAX") / base
 
+    shapes = shapes.long().tolist()
     return {
-        "opt": shapes[opt_idx].tolist(),
-        "min": shapes[min_idx].tolist(),
-        "max": shapes[max_idx].tolist(),
+        "opt": tuple(shapes[opt_idx]),
+        "min": tuple(shapes[min_idx]),
+        "max": tuple(shapes[max_idx]),
     }
 
 

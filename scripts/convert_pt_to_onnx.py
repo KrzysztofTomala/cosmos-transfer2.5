@@ -27,8 +27,8 @@ from cosmos_transfer2._src.transfer2.networks.minimal_v4_lvg_dit_control_vace im
     ControlAwareDiTBlock,
     ControlEncoderDiTBlock,
 )
-from scripts.byoc_utils.model import SCRIPTS_ROOT, ModelDimensions, get_model_dimensions, make_dummy_tensors
-from scripts.byoc_utils.pipeline import PipelineArgs
+from scripts.byoc_utils.model import ModelDimensions, make_dummy_tensors
+from scripts.byoc_utils.pipeline import setup_pipeline_from_defaults
 from scripts.quantize_model import QUANTIZATION_MODES, VARIANTS, ModelMeta, setup_pipeline
 
 
@@ -192,23 +192,16 @@ def export_block_as_onnx(
 
 
 def main(cmdargs):
-    model_meta = ModelMeta.from_text(cmdargs.model_variant)
-
-    with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", "optim_dit_args.json"), "rt") as f:
-        args: dict = json.load(f)
-    args.update({
-        "model": model_meta,
+    pipe, args, dims = setup_pipeline_from_defaults({
+        "model_variant": cmdargs.model_variant,
         "output_dir": cmdargs.output_dir,
         "resolution": cmdargs.resolution,
         "disable_guardrail": True,
     })
-
-    pipe = setup_pipeline(PipelineArgs(**args))
-    dims = get_model_dimensions(pipe.config, cmdargs.resolution)
     dit_controlnet = pipe.model.net
     del pipe
 
-    export_dit_onnx(model_meta, dims, dit_controlnet, cmdargs)
+    export_dit_onnx(args.model, dims, dit_controlnet, cmdargs)
 
 
 if __name__ == "__main__":

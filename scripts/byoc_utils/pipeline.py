@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import json
 import os
 
 import modelopt.torch.quantization as mtq
@@ -21,9 +21,10 @@ import torch
 from megatron.core import parallel_state
 
 from cosmos_transfer2._src.imaginaire.utils import distributed, log, misc
+from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
 from cosmos_transfer2.config import MODEL_CHECKPOINTS, ModelKey, SetupArguments
 from cosmos_transfer2.inference import Control2WorldInference
-from scripts.byoc_utils.model import ModelMeta
+from scripts.byoc_utils.model import ModelMeta, SCRIPTS_ROOT, ModelDimensions, get_model_dimensions
 
 DIT_PATH = "checkpoints/nvidia/Cosmos-Transfer2.5-2B/{domain}/{modality}/{checkpoint_name}"
 
@@ -128,3 +129,15 @@ def setup_pipeline(args: PipelineArgs):
     log.info(f"Initializing ControlVideo2WorldInference for model: {args.model.variant.name}")
     inference = Control2WorldInference(setup_args, batch_hint_keys=[args.model.hint_key])
     return inference.inference_pipeline
+
+
+def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[ControlVideo2WorldInference, PipelineArgs, ModelDimensions]:
+    with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", "optim_dit_args.json"), "rt") as f:
+        config: dict = json.load(f)
+    if overrides:
+        config.update(overrides)
+    config.setdefault("model", ModelMeta.from_text(config["model_variant"]))
+    args = PipelineArgs(**config)
+    pipe = setup_pipeline(args)
+    dims = get_model_dimensions(pipe.config, config["resolution"])
+    return pipe, args, dims

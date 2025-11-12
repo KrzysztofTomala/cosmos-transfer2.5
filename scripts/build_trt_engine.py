@@ -28,10 +28,9 @@ from scripts.byoc_utils.model import (
     VARIANTS,
     ModelDimensions,
     ModelMeta,
-    get_model_dimensions,
     make_dummy_tensors,
 )
-from scripts.byoc_utils.pipeline import QUANTIZATION_MODES, PipelineArgs, setup_pipeline
+from scripts.byoc_utils.pipeline import QUANTIZATION_MODES, setup_pipeline_from_defaults
 from scripts.byoc_utils.trt import (
     TRT_LOGGER,
     create_execution_context_from_pool,
@@ -39,14 +38,15 @@ from scripts.byoc_utils.trt import (
     trt_set_tensor_check
 )
 
-BLOCK_FILE = "cosmos_transfer2.5_dit_{block_type}_block{block_index}.{ext}"
+BLOCK_FILE = "cosmos_transfer2.5_{block_type}_block{block_index}.{ext}"
 
 
 def make_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_variant", choices=VARIANTS, required=True, type=str,
                         help="Model variant to use for control-video-to-world generation")
-    parser.add_argument("--output_dir", type=str, default="output", help="Folder to export ONNX files to.")
+    parser.add_argument("--output_dir", type=str, default="output",
+                        help="Working directory of where to retrieve ONNX files from and export TRT engines to.")
     parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
                         help="Quantization mode (FP8 or NVFP4)")
     parser.add_argument("-O", dest="optimization_level", type=int, default=3, help="TRT optimization level")
@@ -145,15 +145,17 @@ class CosmosTRTEngineBuilder:
         torch.cuda.empty_cache()
 
 
-def main(args):
-    model_meta = ModelMeta.from_text(args.model_variant)
-    pipe = setup_pipeline(PipelineArgs(**args))
-    pipe.to("cpu")
-    dims = get_model_dimensions(pipe.config, args.resolution)
+def main(cmdargs):
+    pipe, args, dims = setup_pipeline_from_defaults({
+        "model_variant": cmdargs.model_variant,
+        "output_dir": cmdargs.output_dir,
+        "resolution": cmdargs.resolution,
+        "disable_guardrail": True,
+    })
     del pipe
 
-    builder = CosmosTRTEngineBuilder(args.output_dir, model_meta, dims, args.resolution, args.mode)
-    builder.build(optimization_level=args.O, test_engines=not args.skip_testrun)
+    builder = CosmosTRTEngineBuilder(args.output_dir, args.model, dims, cmdargs.resolution, cmdargs.mode)
+    builder.build(optimization_level=cmdargs.optimization_level, test_engines=not cmdargs.skip_testrun)
 
 
 if __name__ == "__main__":
