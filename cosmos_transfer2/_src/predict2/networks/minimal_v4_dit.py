@@ -224,37 +224,6 @@ class RMSNorm(torch.nn.Module):
         return output * self.weight
 
 
-class MultiheadAttentionOp(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, q, k, v):
-        q_t = q.transpose(1, 2)  # B H S D
-        k_t = k.transpose(1, 2)  # B H S D
-        v_t = v.transpose(1, 2)  # B H S D
-        return F.scaled_dot_product_attention(q_t, k_t, v_t).transpose(1, 2).flatten(-2)  # B S (H D)
-
-    @staticmethod
-    def symbolic(g, q, k, v):
-        return g.op("Cosmos::MultiheadAttention", q, k, v)
-
-
-class ExportableAttention(torch.nn.Module):
-    def __init__(self, qkv_format: str):
-        super().__init__()
-        assert qkv_format.lower() == "bshd", \
-            "TRTLLM-exportable attention only supports B_S_H_D format. S_B_H_D should be transposed before calling"
-
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, **kwargs):
-        batch, seq_len, _, _ = q.shape
-        if seq_len == k.shape[1]:
-            # FMHA
-            return MultiheadAttentionOp.apply(q, k, v)
-        else:
-            # Cross attention
-            q, k, v = map(lambda t: t.transpose(1, 2), (q, k, v)) # "b s h d -> b h s d"
-            o = F.scaled_dot_product_attention(q, k, v)
-            return o.transpose(1, 2).flatten(-2) # "b h s d -> b s (h d)"
-
-
 # ---------------------- Feed Forward Network -----------------------
 class GPT2FeedForward(nn.Module):
     def __init__(self, d_model: int, d_ff: int):
@@ -286,12 +255,12 @@ class GPT2FeedForward(nn.Module):
         return x
 
 
-def torch_attention_op(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D):
+def torch_attention_op_bshd(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D):
     """Computes multi-head attention using PyTorch's native implementation.
 
-    This function provides a PyTorch backend alternative to Transformer Engine's attention operation.
-    It rearranges the input tensors to match PyTorch's expected format, computes scaled dot-product
-    attention, and rearranges the output back to the original format.
+    This function provides a PyTorch backend alternative to Transformer Engine's attention operation. It assumes input
+    tensors follow the "bshd" format. It then rearranges the input tensors to match PyTorch's expected format ("bhsd"),
+    computes scaled dot-product attention, and rearranges the output back to the original format.
 
     The input tensor names use the following dimension conventions:
 
@@ -308,16 +277,87 @@ def torch_attention_op(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D):
     Returns:
         Attention output tensor with shape (batch, seq_len, n_heads * head_dim)
     """
-    in_q_shape = q_B_S_H_D.shape
-    in_k_shape = k_B_S_H_D.shape
-    q_B_H_S_D = rearrange(q_B_S_H_D, "b ... h k -> b h ... k").view(in_q_shape[0], in_q_shape[-2], -1, in_q_shape[-1])
-    k_B_H_S_D = rearrange(k_B_S_H_D, "b ... h v -> b h ... v").view(in_k_shape[0], in_k_shape[-2], -1, in_k_shape[-1])
-    v_B_H_S_D = rearrange(v_B_S_H_D, "b ... h v -> b h ... v").view(in_k_shape[0], in_k_shape[-2], -1, in_k_shape[-1])
-    result_B_S_HD = rearrange(
-        F.scaled_dot_product_attention(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D), "b h ... l -> b ... (h l)"
-    )
+    # Enforce PyTorch's expected shape
+    q_B_H_S_D = q_B_S_H_D.transpose(1, 2)
+    k_B_H_S_D = k_B_S_H_D.transpose(1, 2)
+    v_B_H_S_D = v_B_S_H_D.transpose(1, 2)
 
+    result_B_S_HD = F.scaled_dot_product_attention(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D).transpose(1, 2).flatten(-2)
     return result_B_S_HD
+
+
+def torch_attention_op_sbhd(q_S_B_H_D, k_S_B_H_D, v_S_B_H_D):
+    """Computes multi-head attention using PyTorch's native implementation.
+
+    This function provides a PyTorch backend alternative to Transformer Engine's attention operation. It assumes input
+    tensors follow the "sbhd" format. It then rearranges the input tensors to match PyTorch's expected format ("bhsd"),
+    computes scaled dot-product attention, and rearranges the output back to the original format.
+
+    The input tensor names use the following dimension conventions:
+
+    - B: batch size
+    - S: sequence length
+    - H: number of attention heads
+    - D: head dimension
+
+    Args:
+        q_S_B_H_D: Query tensor with shape (seq_len, batch, n_heads, head_dim)
+        k_S_B_H_D: Key tensor with shape (seq_len, batch, n_heads, head_dim)
+        v_S_B_H_D: Value tensor with shape (seq_len, batch, n_heads, head_dim)
+
+    Returns:
+        Attention output tensor with shape (seq_len, batch, n_heads * head_dim)
+    """
+    # Enforce PyTorch's expected shape
+    q_B_S_H_D = q_S_B_H_D.transpose(0, 1)
+    k_B_S_H_D = k_S_B_H_D.transpose(0, 1)
+    v_B_S_H_D = v_S_B_H_D.transpose(0, 1)
+
+    result_S_B_HD = torch_attention_op_bshd(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D).transpose(0, 1)
+    return result_S_B_HD
+
+
+def torch_attention_op_bhsd(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D):
+    """Computes multi-head attention using PyTorch's native implementation.
+
+    This function provides a PyTorch backend alternative to Transformer Engine's attention operation. Assumes input
+    tensors match PyTorch's expected format ("bhsd") when computing scaled dot-product attention.
+
+    The input tensor names use the following dimension conventions:
+
+    - B: batch size
+    - S: sequence length
+    - H: number of attention heads
+    - D: head dimension
+
+    Args:
+        q_B_H_S_D: Query tensor with shape (batch, n_heads, seq_len, head_dim)
+        k_B_H_S_D: Key tensor with shape (batch, n_heads, seq_len, head_dim)
+        v_B_H_S_D: Value tensor with shape (batch, n_heads, seq_len, head_dim)
+
+    Returns:
+        Attention output tensor with shape (batch, n_heads, seq_len * head_dim)
+    """
+    return F.scaled_dot_product_attention(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D).flatten(-2)  # result_B_H_SD
+
+
+TORCH_ATTENTION_OP_MAP = {  # QKV format -> op
+    "bshd": torch_attention_op_bshd,
+    "sbhd": torch_attention_op_sbhd,
+    "bhsd": torch_attention_op_bhsd,
+}
+
+
+class ExportableAttention(torch.nn.Module):
+    def __init__(self, qkv_format: str):
+        super().__init__()
+        assert qkv_format in TORCH_ATTENTION_OP_MAP, \
+            f"TRTLLM-exportable Attention only supports {TORCH_ATTENTION_OP_MAP.keys()} QKV formats."
+        self.qkv_format = qkv_format
+        self.op = TORCH_ATTENTION_OP_MAP[qkv_format]
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, **kwargs):
+        return self.op(q, k, v)
 
 
 def torch_rope_emb(
@@ -457,7 +497,7 @@ class Attention(nn.Module):
         elif self.backend == "minimal_a2a":
             self.attn_op = MinimalA2AAttnOp()
         elif self.backend == "torch":
-            self.attn_op = torch_attention_op
+            self.attn_op = TORCH_ATTENTION_OP_MAP[self.qkv_format]
 
         self._query_dim = query_dim
         self._context_dim = context_dim
