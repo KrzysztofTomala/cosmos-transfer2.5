@@ -46,7 +46,7 @@ def make_parser():
 
 
 # TODO(rafonsorodri): add support for NVFP4
-def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmdargs):
+def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmdargs) -> str:
     # Fuse QKV projection
     for block in dit_controlnet.blocks + dit_controlnet.control_blocks:
         block.self_attn.fuse_qkv_proj()  # self-attention only, cross-attention has Sq != Sk
@@ -72,6 +72,8 @@ def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmd
         block_meta = BlockMeta(bidx, is_control=True, receives_control=False)
         inputs = {"c": c, **{key: dummy_tensors[key] for key in block_meta.fixed_inputs}}
         c = export_block_as_onnx(onnx_dir, inputs, block_meta, dit_controlnet.control_blocks[bidx])
+
+    return onnx_dir
 
 
 def export_block_as_onnx(
@@ -113,7 +115,7 @@ def export_block_as_onnx(
     return output
 
 
-def main(cmdargs):
+def main(cmdargs) -> str:
     pipe, args, dims = setup_pipeline_from_defaults({
         "model_variant": cmdargs.model_variant,
         "output_dir": cmdargs.output_dir,
@@ -123,7 +125,8 @@ def main(cmdargs):
     dit_controlnet = pipe.model.net
     del pipe
 
-    export_dit_onnx(args.model, dims, dit_controlnet, cmdargs)
+    onnx_dir = export_dit_onnx(args.model, dims, dit_controlnet, cmdargs)
+    return onnx_dir
 
 
 if __name__ == "__main__":

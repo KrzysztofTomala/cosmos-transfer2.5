@@ -248,7 +248,7 @@ def calibrate_dit_denoiser(pipe, args: argparse.Namespace, quant_config):
     return mtq.quantize(dit_controlnet, quant_config, forward_loop)
 
 
-def main(cmdargs):
+def main(cmdargs) -> str:
     model_meta = ModelMeta.from_text(cmdargs.model_variant)
 
     # Base args
@@ -277,16 +277,15 @@ def main(cmdargs):
         cmdargs.output_dir,
         f"dit_controlnet_{model_meta.safe_name}_{cmdargs.resolution}_{cmdargs.mode}"
     )
-    log.info(f"Saving quantized checkpoint to: {filename_noext}.pt")
-    mto.save(dit_controlnet, f"{filename_noext}.pt")
+    filename_pt = f"{filename_noext}.pt"
+    log.info(f"Saving quantized checkpoint to: {filename_pt}")
+    mto.save(dit_controlnet, filename_pt)
     real_stdout = sys.stdout
     with open(f"{filename_noext}.mtq-rep.txt", 'w') as sys.stdout:
         mtq.print_quant_summary(dit_controlnet)
     sys.stdout = real_stdout
 
-    pipe.model.net = dit_controlnet
-
-    return pipe
+    return filename_pt
 
 
 if __name__ == "__main__":
