@@ -22,6 +22,7 @@ import tensorrt as trt
 import torch
 import tqdm
 
+from cosmos_transfer2._src.imaginaire.utils import log
 from scripts.byoc_utils.model import (
     FIXED_CONTROL_INPUTS,
     FIXED_INPUTS,
@@ -77,18 +78,16 @@ class CosmosTRTEngineBuilder:
         os.makedirs(self.trt_dir, exist_ok=True)
 
         for block_index in tqdm.trange(self.model_dims.BK, disable=False, desc="Processing base block"):
-            self._process_block(block_index, optimization_level, test=test_engines, is_control=False)
+            self._process_block(block_index, optimization_level, test_engine=test_engines, is_control=False)
         for block_index in tqdm.trange(self.model_dims.BC, disable=False, desc="Processing control block"):
-            self._process_block(block_index, optimization_level, test=test_engines, is_control=True)
+            self._process_block(block_index, optimization_level, test_engine=test_engines, is_control=True)
 
-    def _process_block(self, block_index: int, optimization_level: int, test: bool, is_control: bool):
+    def _process_block(self, block_index: int, optimization_level: int, test_engine: bool, is_control: bool):
         block_type = "controlnet" if is_control else "net"
         onnx_file = self.onnx_path.format(block_type=block_type, block_index=block_index, ext='onnx')
         engine_file = self.engine_path.format(block_type=block_type, block_index=block_index, ext='trt')
 
         # Build
-        inner_pbar = tqdm.tqdm([1, 2], position=1, leave=False)
-        inner_pbar.set_description("Building TRT engine", refresh=True)
         engine_serialized = trt_engine_from_onnx_block(
             self.trt_builder,
             onnx_file,
@@ -97,22 +96,19 @@ class CosmosTRTEngineBuilder:
             dims=self.model_dims,
             optimization_level=optimization_level,
         )
-        inner_pbar.update()
 
         # Test
-        if test:
-            inner_pbar.update()
-            inner_pbar.set_description("Testing TRT engine: skipped", refresh=True)
+        if test_engine:
+            log.info("Testing TRT engine")
+            self._test_block_engine(engine_serialized, block_index, is_control)
         else:
-            inner_pbar.set_description("Testing TRT engine", refresh=True)
-            self._test_block_engine(engine_serialized. block_index, is_control)
-            inner_pbar.update()
+            log.info("Testing TRT engine: skipped")
 
         # Save
-        inner_pbar.set_description("Saving TRT engine", refresh=True)
+        log.info("Saving TRT engine")
         with open(engine_file, "wb") as f:
             f.write(engine_serialized)
-        inner_pbar.update()
+        log.info(f"Engine saved to {engine_file}")
 
     def _test_block_engine(self, engine, block_index: int, is_control: bool = True):
         engine = self.trt_runtime.deserialize_cuda_engine(engine)
@@ -124,7 +120,7 @@ class CosmosTRTEngineBuilder:
         dummy_tensors = make_dummy_tensors(self.model_dims, with_outputs=True)
 
         if is_control:
-            c = dummy_tensors["control_B_T_H_W_D"] if block_index == 0 else dummy_tensors["output_hints"][:block_index]
+            c = dummy_tensors["control_B_T_H_W_D"] if block_index == 0 else dummy_tensors["output_hints"][:block_index+1]
             register_input("c", c)
             for key in FIXED_CONTROL_INPUTS:
                 register_input(key, dummy_tensors[key])

@@ -71,10 +71,13 @@ def create_execution_context_from_pool(engine):
 
 
 def trt_set_tensor_check(context, name, tensor, check_shape=True):
-    assert tensor.is_contiguous(), f"contiguous tensor expected: {name}"
-    assert _trt2pt_dtype[context.engine.get_tensor_dtype(name)] == tensor.dtype, f"incompatible dtype for tensor {name}"
+    assert tensor.is_contiguous(), f"contiguous tensor expected for `{name}`."
+    expected_dtype = _trt2pt_dtype[context.engine.get_tensor_dtype(name)]
+    assert expected_dtype == tensor.dtype, \
+        f"incompatible dtype for tensor `{name}`: {tensor.dtype}, expected {expected_dtype}."
     if check_shape:
-        assert context.set_input_shape(name, tensor.shape), f"incompatible shape for tensor {name}"
+        assert context.set_input_shape(name, tensor.shape), \
+            f"incompatible shape for tensor `{name}`: {tensor.shape}, expected {context.engine.get_tensor_shape(name)}."
     context.set_tensor_address(name, tensor.data_ptr())
 
 
@@ -143,7 +146,7 @@ def optimization_profile_control_block(trt_builder, block_index: int, dims: Mode
     for key in FIXED_CONTROL_INPUTS:
         profile.set_shape(key, **shapes_from_spec(SHAPE_SPECS[key], dims, bounds))
 
-    c_shape = SHAPE_SPECS["control_B_T_H_W_D"]
+    c_shape = SHAPE_SPECS["control_B_T_H_W_D"].copy()
     if block_index > 0:
         c_shape.insert(0, str(block_index+1))
     profile.set_shape("c", **shapes_from_spec(c_shape, dims, bounds))

@@ -80,7 +80,7 @@ class RegularTracedDitBlock(torch.nn.Module):
         return self.block(
             x_B_T_H_W_D,
             torch.unbind(hints),
-            control_context_scale.item(),
+            control_context_scale,
             emb_B_T_D=emb_B_T_D,
             crossattn_emb=crossattn_emb,
             rope_emb_L_1_1_D=rope_emb_L_1_1_D,

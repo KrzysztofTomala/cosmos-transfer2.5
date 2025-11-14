@@ -194,7 +194,7 @@ def make_dummy_tensors(dims: ModelDimensions, with_outputs: bool = False) -> dic
         "crossattn_emb": _make("crossattn_emb"),
         "rope_emb_T_H_W_1_1_D": _make("rope_emb_T_H_W_1_1_D", dtype=torch.float),
         "adaln_lora_B_T_3D": _make("adaln_lora_B_T_3D", dtype=torch.float),
-        "control_context_scale": torch.ones_like(_make("control_context_scale", dtype=torch.float)),
+        "control_context_scale": torch.ones_like(_make("control_context_scale")),
     }
 
     if with_outputs:
