@@ -31,7 +31,7 @@ CONTROL2WORLD_ASSETS = os.path.join(ASSETS_ROOT, "{modality}.jsonl")
 VARIANTS = [v.value for v in BASE_MODEL_VARIANTS] + [ModelVariant.AUTO_MULTIVIEW.value]
 ASPECT_RATIO = "9,16"
 
-FIXED_INPUTS = [
+FIXED_INPUTS_BASE_CONTROLLED = [
     "x_B_T_H_W_D",
     "hints",
     "control_context_scale",
@@ -40,9 +40,9 @@ FIXED_INPUTS = [
     "rope_emb_T_H_W_1_1_D",
     "adaln_lora_B_T_3D"
 ]
-FIXED_CONTROL_INPUTS = FIXED_INPUTS.copy()
-FIXED_CONTROL_INPUTS.remove("hints")
-FIXED_CONTROL_INPUTS.remove("control_context_scale")
+FIXED_INPUTS = FIXED_INPUTS_BASE_CONTROLLED.copy()
+FIXED_INPUTS.remove("hints")
+FIXED_INPUTS.remove("control_context_scale")
 
 SHAPE_SPECS = {
     "x_B_T_H_W_D": ["B", "T", "H", "W", "HS*DS"],

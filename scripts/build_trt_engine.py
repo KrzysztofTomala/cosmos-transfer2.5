@@ -23,14 +23,8 @@ import torch
 import tqdm
 
 from cosmos_transfer2._src.imaginaire.utils import log
-from scripts.byoc_utils.model import (
-    FIXED_CONTROL_INPUTS,
-    FIXED_INPUTS,
-    VARIANTS,
-    ModelDimensions,
-    ModelMeta,
-    make_dummy_tensors,
-)
+from scripts.byoc_utils.block import BlockMeta
+from scripts.byoc_utils.model import VARIANTS, ModelDimensions, ModelMeta, make_dummy_tensors
 from scripts.byoc_utils.pipeline import QUANTIZATION_MODES, setup_pipeline_from_defaults
 from scripts.byoc_utils.trt import (
     TRT_LOGGER,
@@ -58,7 +52,14 @@ def make_parser():
 
 
 class CosmosTRTEngineBuilder:
-    def __init__(self, root_dir: str, model_meta: ModelMeta, dims: ModelDimensions, resolution: str, quant_mode: str):
+    def __init__(
+        self,
+        root_dir: str,
+        model_meta: ModelMeta,
+        dims: ModelDimensions,
+        control_receiving_layers: list[int],
+        quant_mode: str
+    ):
         self.pyt_stream = torch.cuda.current_stream()
         self.trt_stream = torch.cuda.Stream()
         self.trt_builder = trt.Builder(TRT_LOGGER)
@@ -71,28 +72,29 @@ class CosmosTRTEngineBuilder:
         self.engine_path = os.path.join(self.trt_dir, BLOCK_FILE)
 
         self.model_dims = dims
-        self.low_res = resolution == "480"
+        self.control_receiving_layers = control_receiving_layers
 
     def build(self, optimization_level: int, test_engines: bool):
         assert os.path.exists(self.onnx_dir), f"Missing ONNX source folder: {self.onnx_dir}"
         os.makedirs(self.trt_dir, exist_ok=True)
 
         for block_index in tqdm.trange(self.model_dims.BK, disable=False, desc="Processing base block"):
-            self._process_block(block_index, optimization_level, test_engine=test_engines, is_control=False)
+            receives_control = block_index in self.control_receiving_layers
+            block_meta = BlockMeta(block_index, is_control=False, receives_control=receives_control)
+            self._process_block(block_meta, optimization_level, test_engine=test_engines)
         for block_index in tqdm.trange(self.model_dims.BC, disable=False, desc="Processing control block"):
-            self._process_block(block_index, optimization_level, test_engine=test_engines, is_control=True)
+            block_meta = BlockMeta(block_index, is_control=True, receives_control=False)
+            self._process_block(block_meta, optimization_level, test_engine=test_engines)
 
-    def _process_block(self, block_index: int, optimization_level: int, test_engine: bool, is_control: bool):
-        block_type = "controlnet" if is_control else "net"
-        onnx_file = self.onnx_path.format(block_type=block_type, block_index=block_index, ext='onnx')
-        engine_file = self.engine_path.format(block_type=block_type, block_index=block_index, ext='trt')
+    def _process_block(self, meta: BlockMeta, optimization_level: int, test_engine: bool):
+        onnx_file = self.onnx_path.format(block_type=meta.block_type, block_index=meta.block_index, ext='onnx')
+        engine_file = self.engine_path.format(block_type=meta.block_type, block_index=meta.block_index, ext='trt')
 
         # Build
         engine_serialized = trt_engine_from_onnx_block(
             self.trt_builder,
             onnx_file,
-            block_index,
-            is_control,
+            block_meta=meta,
             dims=self.model_dims,
             optimization_level=optimization_level,
         )
@@ -100,7 +102,7 @@ class CosmosTRTEngineBuilder:
         # Test
         if test_engine:
             log.info("Testing TRT engine")
-            self._test_block_engine(engine_serialized, block_index, is_control)
+            self._test_block_engine(engine_serialized, meta)
         else:
             log.info("Testing TRT engine: skipped")
 
@@ -110,7 +112,7 @@ class CosmosTRTEngineBuilder:
             f.write(engine_serialized)
         log.info(f"Engine saved to {engine_file}")
 
-    def _test_block_engine(self, engine, block_index: int, is_control: bool = True):
+    def _test_block_engine(self, engine, meta: BlockMeta):
         engine = self.trt_runtime.deserialize_cuda_engine(engine)
         context = create_execution_context_from_pool(engine)
 
@@ -119,16 +121,17 @@ class CosmosTRTEngineBuilder:
 
         dummy_tensors = make_dummy_tensors(self.model_dims, with_outputs=True)
 
-        if is_control:
-            c = dummy_tensors["control_B_T_H_W_D"] if block_index == 0 else dummy_tensors["output_hints"][:block_index+1]
+        for key in meta.fixed_inputs:
+            register_input(key, dummy_tensors[key])
+        if meta.is_control:
+            if meta.block_index == 0:
+                c = dummy_tensors["control_B_T_H_W_D"]
+            else:
+                c = dummy_tensors["output_hints"][:meta.block_index+1]
             register_input("c", c)
-            for key in FIXED_CONTROL_INPUTS:
-                register_input(key, dummy_tensors[key])
-            register_output('output', dummy_tensors["output_hints"][:block_index+2])
+            register_output('output', dummy_tensors["output_hints"][:meta.block_index+2])
         else:
-            for key in FIXED_INPUTS:
-                register_input(key, dummy_tensors[key])
-            register_output('output', dummy_tensors["output_hints"])
+            register_output('output', dummy_tensors["output_B_T_H_W_D"])
 
         self.trt_stream.wait_stream(self.pyt_stream)
         context.execute_async_v3(self.trt_stream.cuda_stream)
@@ -148,9 +151,11 @@ def main(cmdargs):
         "resolution": cmdargs.resolution,
         "disable_guardrail": True,
     })
+    control_receiving_layers = pipe.model.net.control_layers
     del pipe
 
-    builder = CosmosTRTEngineBuilder(args.output_dir, args.model, dims, cmdargs.resolution, cmdargs.mode)
+    builder = CosmosTRTEngineBuilder(
+        args.output_dir, args.model, dims, control_receiving_layers, cmdargs.mode)
     builder.build(optimization_level=cmdargs.optimization_level, test_engines=not cmdargs.skip_testrun)
 
 

@@ -19,14 +19,8 @@ import torch
 import tensorrt as trt
 
 from cosmos_transfer2._src.imaginaire.utils import log
-from scripts.byoc_utils.model import (
-    FIXED_CONTROL_INPUTS,
-    FIXED_INPUTS,
-    SHAPE_SPECS,
-    ModelDimensions,
-    OperationalBounds,
-    shapes_from_spec
-)
+from scripts.byoc_utils.block import BlockMeta
+from scripts.byoc_utils.model import SHAPE_SPECS, ModelDimensions, OperationalBounds, shapes_from_spec
 
 
 TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
@@ -84,8 +78,7 @@ def trt_set_tensor_check(context, name, tensor, check_shape=True):
 def trt_engine_from_onnx_block(
     trt_builder: trt.Builder,
     onnx_path: str,
-    block_index: int,
-    is_control: bool,
+    block_meta: BlockMeta,
     dims: ModelDimensions,
     optimization_level: int = 3,
     explicit_bounds: OperationalBounds = None,
@@ -103,10 +96,7 @@ def trt_engine_from_onnx_block(
     # Prepare build config
     config = trt_builder.create_builder_config()
     config.builder_optimization_level = optimization_level
-    if is_control:
-        profile = optimization_profile_control_block(trt_builder, block_index, dims, bounds)
-    else:
-        profile = optimization_profile_block(trt_builder, dims, bounds)
+    profile = optimization_profile_block(trt_builder, block_meta, dims, bounds)
     config.add_optimization_profile(profile)
 
     # Prepare graph and load block
@@ -131,24 +121,16 @@ def trt_engine_from_onnx_block(
     return engine_serialized
 
 
-def optimization_profile_block(trt_builder, dims: ModelDimensions, bounds: OperationalBounds):
+def optimization_profile_block(trt_builder, block_meta: BlockMeta, dims: ModelDimensions, bounds: OperationalBounds):
     profile = trt_builder.create_optimization_profile()
 
-    for key in FIXED_INPUTS:
+    for key in block_meta.fixed_inputs:
         profile.set_shape(key, **shapes_from_spec(SHAPE_SPECS[key], dims, bounds))
 
-    return profile
-
-
-def optimization_profile_control_block(trt_builder, block_index: int, dims: ModelDimensions, bounds: OperationalBounds):
-    profile = trt_builder.create_optimization_profile()
-
-    for key in FIXED_CONTROL_INPUTS:
-        profile.set_shape(key, **shapes_from_spec(SHAPE_SPECS[key], dims, bounds))
-
-    c_shape = SHAPE_SPECS["control_B_T_H_W_D"].copy()
-    if block_index > 0:
-        c_shape.insert(0, str(block_index+1))
-    profile.set_shape("c", **shapes_from_spec(c_shape, dims, bounds))
+    if block_meta.is_control:
+        c_shape = SHAPE_SPECS["control_B_T_H_W_D"].copy()
+        if block_meta.block_index > 0:
+            c_shape.insert(0, str(block_meta.block_index+1))
+        profile.set_shape("c", **shapes_from_spec(c_shape, dims, bounds))
 
     return profile
