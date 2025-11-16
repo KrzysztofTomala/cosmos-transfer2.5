@@ -16,6 +16,7 @@
 """DepthAnythingV2 model for frame-by-frame depth estimation."""
 
 import logging
+import os
 from typing import Optional
 
 import numpy as np
@@ -27,7 +28,22 @@ from cosmos_transfer2._src.transfer2.auxiliary.depth_anything.utils import get_m
 
 logger = logging.getLogger(__name__)
 
-WEIGHTS_NAME = "depth-anything/Depth-Anything-V2-Small-hf"
+# Use local workspace path (downloaded from NGC manifest)
+# Model MUST be present in workspace - no HuggingFace fallback
+WORKSPACE_PATH = os.environ.get("NIM_MODEL_WORKSPACE_PATH", "/opt/nim/workspace")
+DEPTH_MODEL_PATH = os.path.join(WORKSPACE_PATH, "depth_anything_v2")
+
+if os.path.exists(DEPTH_MODEL_PATH):
+    WEIGHTS_NAME = DEPTH_MODEL_PATH
+    logger.info(f"✅ Using Depth Anything V2 from NGC workspace: {WEIGHTS_NAME}")
+else:
+    error_msg = (
+        f"❌ Depth Anything V2 model not found in NGC workspace at {DEPTH_MODEL_PATH}\n"
+        f"Expected model files to be downloaded from NGC manifest.\n"
+        f"Please ensure model_manifest.yaml includes the depth-anything-v2 profile and NIM has downloaded it."
+    )
+    logger.error(error_msg)
+    raise FileNotFoundError(error_msg)
 
 
 class DepthAnythingV2Model:

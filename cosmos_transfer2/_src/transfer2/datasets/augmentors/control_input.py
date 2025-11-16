@@ -87,7 +87,7 @@ class AddControlInputEdge(Augmentor):
         key_img = self.input_keys[0]
         key_out = self.output_keys[0]
         frames = data_dict[key_img]
-        # log.info(f"Adding control input edge. Input key: {key_img}, Output key: {key_out}. Use random: {self.use_random}, Preset strength: {self.preset_strength}")
+        log.info(f"Computing edge control (Canny). Preset strength: {self.preset_strength}")
         # Get lower and upper threshold for canny edge detection.
         if self.use_random:  # always on for training, always off for inference
             if self.t_lower is not None and self.t_upper is not None:
@@ -196,6 +196,7 @@ class AddControlInputBlur(Augmentor):
             data_dict[self.output_keys[0]] = data_dict["control_input_vis"]
             return data_dict
 
+        log.info(f"Computing visual/blur control. Preset strength: {self.preset_strength}")
         key_out = self.output_keys[0]
         frames, is_image = self._load_frame(data_dict)
         if self.preset_strength == "none":
