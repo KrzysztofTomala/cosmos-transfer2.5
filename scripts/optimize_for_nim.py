@@ -83,7 +83,7 @@ def build_trt_engines(cmdargs) -> str:
         "--model_variant", cmdargs.model_variant,
         "--output_dir", cmdargs.output_dir,
         "--mode", cmdargs.quant_mode,
-        "-O", cmdargs.optimization_level,
+        "-O", str(cmdargs.optimization_level),
         "--resolution", cmdargs.resolution,
     ]
     if cmdargs.skip_trt_tests:
@@ -106,7 +106,7 @@ def main(cmdargs):
 
     # Quantize custom checkpoint
     modelopt_checkpoint = quantize_checkpoint(cmdargs)
-    log.info(f"Quantized model saved to: {modelopt_checkpoint}")
+    log.info(f"Quantized model saved to: {os.path.join(cmdargs.output_dir, modelopt_checkpoint)}")
 
     # Convert DiT blocks to ONNX
     onnx_dir = convert_to_onnx(cmdargs, modelopt_checkpoint)
