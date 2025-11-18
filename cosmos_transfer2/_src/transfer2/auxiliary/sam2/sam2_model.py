@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 import tempfile
 
@@ -24,11 +25,45 @@ from PIL import Image
 from cosmos_transfer2._src.imaginaire.flags import INTERNAL
 
 if not INTERNAL:
-    from sam2.sam2_video_predictor import SAM2VideoPredictor
+    from sam2.build_sam import build_sam2_video_predictor
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
-SAM2_MODEL_CHECKPOINT = "facebook/sam2-hiera-large"
-GROUNDING_DINO_MODEL_CHECKPOINT = "IDEA-Research/grounding-dino-base"
+logger = logging.getLogger(__name__)
+
+# Use local workspace paths (downloaded from NGC manifest)
+# Models MUST be present in workspace - no HuggingFace fallback
+WORKSPACE_PATH = os.environ.get("NIM_MODEL_WORKSPACE_PATH", "/opt/nim/workspace")
+
+# Check SAM2 model location
+sam2_workspace_path = os.path.join(WORKSPACE_PATH, "sam2")
+sam2_checkpoint_path = os.path.join(sam2_workspace_path, "sam2_hiera_large.pt")
+if os.path.exists(sam2_checkpoint_path):
+    SAM2_CHECKPOINT_PATH = sam2_checkpoint_path
+    # SAM2 configs are bundled with the sam2 package
+    SAM2_CONFIG = "sam2_hiera_l.yaml"  # Large model config
+    logger.info(f"✅ Using SAM2 from NGC workspace: {SAM2_CHECKPOINT_PATH}")
+else:
+    error_msg = (
+        f"❌ SAM2 model not found in NGC workspace at {sam2_checkpoint_path}\n"
+        f"Expected model files to be downloaded from NGC manifest.\n"
+        f"Please ensure model_manifest.yaml includes the SAM2 profile and NIM has downloaded it."
+    )
+    logger.error(error_msg)
+    raise FileNotFoundError(error_msg)
+
+# Check GroundingDINO model location
+grounding_dino_workspace_path = os.path.join(WORKSPACE_PATH, "grounding_dino")
+if os.path.exists(grounding_dino_workspace_path):
+    GROUNDING_DINO_MODEL_CHECKPOINT = grounding_dino_workspace_path
+    logger.info(f"✅ Using GroundingDINO from NGC workspace: {GROUNDING_DINO_MODEL_CHECKPOINT}")
+else:
+    error_msg = (
+        f"❌ GroundingDINO model not found in NGC workspace at {grounding_dino_workspace_path}\n"
+        f"Expected model files to be downloaded from NGC manifest.\n"
+        f"Please ensure model_manifest.yaml includes the GroundingDINO profile and NIM has downloaded it."
+    )
+    logger.error(error_msg)
+    raise FileNotFoundError(error_msg)
 
 
 from cosmos_transfer2._src.transfer2.auxiliary.sam2.sam2_utils import (
@@ -62,8 +97,12 @@ class VideoSegmentationModel:
         """Initialize the model and load all required components."""
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Initialize SAM2 predictor
-        self.sam2_predictor = SAM2VideoPredictor.from_pretrained(SAM2_MODEL_CHECKPOINT).to(self.device)
+        # Initialize SAM2 predictor from local checkpoint
+        self.sam2_predictor = build_sam2_video_predictor(
+            config_file=SAM2_CONFIG,
+            ckpt_path=SAM2_CHECKPOINT_PATH,
+            device=str(self.device)
+        )
 
         # Initialize GroundingDINO for text-based detection
         self.grounding_model_name = kwargs.get("grounding_model", GROUNDING_DINO_MODEL_CHECKPOINT)
@@ -85,7 +124,7 @@ class VideoSegmentationModel:
         results = self.processor.post_process_grounded_object_detection(
             outputs,
             inputs.input_ids,
-            box_threshold=0.15,
+            threshold=0.15,
             text_threshold=0.25,
             target_sizes=[image.size[::-1]],
         )
@@ -98,7 +137,7 @@ class VideoSegmentationModel:
             results = self.processor.post_process_grounded_object_detection(
                 outputs,
                 inputs.input_ids,
-                box_threshold=0.1,
+                threshold=0.1,
                 text_threshold=0.1,
                 target_sizes=[image.size[::-1]],
             )

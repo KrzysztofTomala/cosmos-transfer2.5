@@ -34,8 +34,22 @@ from cosmos_transfer2._src.transfer2.datasets.augmentors.seg import (
 def write_video(frames, output_path, fps=30):
     """
     expects a sequence of [H, W, 3] or [H, W] frames
+    Uses VP9 codec for compatibility with NIMS
     """
-    with imageio.get_writer(output_path, fps=fps, macro_block_size=8) as writer:
+    with imageio.get_writer(
+        output_path,
+        fps=fps,
+        codec='libvpx-vp9',
+        quality=None,
+        bitrate=0,
+        output_params=[
+            '-f', 'mp4',
+            '-crf', '30',
+            '-deadline', 'realtime',
+            '-cpu-used', '4',
+            '-row-mt', '1',
+        ]
+    ) as writer:
         for frame in frames:
             if len(frame.shape) == 2:  # single channel
                 frame = frame[:, :, None].repeat(3, axis=2)
