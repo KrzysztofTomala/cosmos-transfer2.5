@@ -145,15 +145,23 @@ class ImageioVideoHandler(BaseFileHandler):
             obj = obj.cpu().numpy()
         h, w = obj.shape[1:-1]
 
-        # Default ffmpeg params that ensure width and height are set
-        default_ffmpeg_params = ["-s", f"{w}x{h}"]
+        # Use VP9 codec for NIMS compatibility with optimized settings
+        default_ffmpeg_params = [
+            "-s", f"{w}x{h}",
+            "-c:v", "libvpx-vp9",
+            "-crf", "30",  # Quality setting (0-63, lower is better quality)
+            "-deadline", "realtime",  # Optimize for real-time encoding
+            "-cpu-used", "4",  # Speed/quality tradeoff (0-8, higher is faster)
+            "-row-mt", "1",  # Enable row-based multi-threading
+        ]
 
         # Use provided ffmpeg_params if any, otherwise use defaults
         final_ffmpeg_params = ffmpeg_params if ffmpeg_params is not None else default_ffmpeg_params
 
         mimsave_kwargs = {
             "fps": fps,
-            "quality": quality,
+            "quality": None,  # Use CRF instead
+            "bitrate": 0,  # Use CRF instead
             "macro_block_size": 1,
             "ffmpeg_params": final_ffmpeg_params,
             "output_params": ["-f", "mp4"],

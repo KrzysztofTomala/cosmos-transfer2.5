@@ -34,69 +34,26 @@ from cosmos_transfer2._src.transfer2.datasets.augmentors.seg import (
 def write_video(frames, output_path, fps=30):
     """
     expects a sequence of [H, W, 3] or [H, W] frames
+    Uses VP9 codec for compatibility with NIMS
     """
-    # Try multiple codecs in order of preference
-    codecs_to_try = [
-        ('libx264', {}),
-        ('h264_nvenc', {}),
-        ('libx265', {}),
-        ('mpeg4', {}),
-    ]
-    
-    writer = None
-    last_error = None
-    
-    for codec, extra_params in codecs_to_try:
-        try:
-            writer = imageio.get_writer(
-                output_path, 
-                fps=fps, 
-                codec=codec,
-                macro_block_size=8,
-                **extra_params
-            )
-            break  # Success!
-        except (RuntimeError, ValueError, OSError) as e:
-            last_error = e
-            continue
-    
-    if writer is None:
-        # Fallback: use cv2 to write video
-        import cv2
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = None
-        for i, frame in enumerate(frames):
-            if len(frame.shape) == 2:  # single channel
-                frame = frame[:, :, None].repeat(3, axis=2)
-            if out is None:
-                h, w = frame.shape[:2]
-                out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
-            out.write(frame)
-        if out:
-            out.release()
-        return
-    
-    # Use imageio writer if available
-    try:
-        with writer:
-            for frame in frames:
-                if len(frame.shape) == 2:  # single channel
-                    frame = frame[:, :, None].repeat(3, axis=2)
-                writer.append_data(frame)
-    except (OSError, BrokenPipeError) as e:
-        # If imageio fails, fallback to cv2
-        import cv2
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = None
+    with imageio.get_writer(
+        output_path,
+        fps=fps,
+        codec='libvpx-vp9',
+        quality=None,
+        bitrate=0,
+        output_params=[
+            '-f', 'mp4',
+            '-crf', '30',  # Quality setting (0-63, lower is better quality)
+            '-deadline', 'realtime',  # Optimize for real-time encoding
+            '-cpu-used', '4',  # Speed/quality tradeoff (0-8, higher is faster)
+            '-row-mt', '1',  # Enable row-based multi-threading
+        ]
+    ) as writer:
         for frame in frames:
             if len(frame.shape) == 2:  # single channel
                 frame = frame[:, :, None].repeat(3, axis=2)
-            if out is None:
-                h, w = frame.shape[:2]
-                out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
-            out.write(frame)
-        if out:
-            out.release()
+            writer.append_data(frame)
 
 
 def capture_fps(input_video_path: str):
