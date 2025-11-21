@@ -32,6 +32,9 @@ from scripts.byoc_utils.trt import (
     trt_engine_from_onnx_block,
     trt_set_tensor_check
 )
+# Import PluginV3
+import packages._trt_plugins as _
+from packages._trt_plugins.context_registry import set_loc_cp_ranks
 
 BLOCK_FILE = "cosmos_transfer2.5_{block_type}_block{block_index}.{ext}"
 
@@ -120,6 +123,7 @@ class CosmosTRTEngineBuilder:
         register_output = partial(trt_set_tensor_check, context, check_shape=False)
 
         dummy_tensors = make_dummy_tensors(self.model_dims, with_outputs=True)
+        set_loc_cp_ranks([0])
 
         for key in meta.fixed_inputs:
             register_input(key, dummy_tensors[key])

@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Tuple, Union
+from copy import deepcopy
 
 import numpy as np
 import torch
@@ -254,6 +255,19 @@ class GPT2FeedForward(nn.Module):
         x = self.layer2(x)
         return x
 
+class MultiheadAttentionBSHDOp(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx,
+                q, k, v):
+        q_t = q.transpose(1, 2) # B H S D
+        k_t = k.transpose(1, 2) # B H S D
+        v_t = v.transpose(1, 2) # B H S D
+        return F.scaled_dot_product_attention(q_t, k_t, v_t).transpose(1, 2).flatten(-2) # B S (H D)
+
+    @staticmethod
+    def symbolic(g,
+                 q, k, v):
+        return g.op("Cosmos::MultiheadAttention", q, k, v)
 
 def torch_attention_op_bshd(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D):
     """Computes multi-head attention using PyTorch's native implementation.
@@ -278,11 +292,12 @@ def torch_attention_op_bshd(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D):
         Attention output tensor with shape (batch, seq_len, n_heads * head_dim)
     """
     # Enforce PyTorch's expected shape
-    q_B_H_S_D = q_B_S_H_D.transpose(1, 2)
-    k_B_H_S_D = k_B_S_H_D.transpose(1, 2)
-    v_B_H_S_D = v_B_S_H_D.transpose(1, 2)
+    # q_B_H_S_D = q_B_S_H_D.transpose(1, 2)
+    # k_B_H_S_D = k_B_S_H_D.transpose(1, 2)
+    # v_B_H_S_D = v_B_S_H_D.transpose(1, 2)
 
-    result_B_S_HD = F.scaled_dot_product_attention(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D).transpose(1, 2).flatten(-2)
+    # result_B_S_HD = F.scaled_dot_product_attention(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D).transpose(1, 2).flatten(-2)
+    result_B_S_HD = MultiheadAttentionBSHDOp.apply(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D)
     return result_B_S_HD
 
 
@@ -349,8 +364,12 @@ TORCH_ATTENTION_OP_MAP = {  # QKV format -> op
 
 
 class ExportableAttention(torch.nn.Module):
-    def __init__(self, qkv_format: str):
+    def __init__(self, qkv_format: str, is_selfattn: bool):
         super().__init__()
+        attn_op_map = deepcopy(TORCH_ATTENTION_OP_MAP)
+        if is_selfattn:
+            del attn_op_map['bhsd'] # HND support removed for selfattn. CP will break
+
         assert qkv_format in TORCH_ATTENTION_OP_MAP, \
             f"TRTLLM-exportable Attention only supports {TORCH_ATTENTION_OP_MAP.keys()} QKV formats."
         self.qkv_format = qkv_format
@@ -518,7 +537,7 @@ class Attention(nn.Module):
                 layer.reset_parameters()
 
     def _exportable_attention(self):
-        self.attn_op = ExportableAttention(self.qkv_format)
+        self.attn_op = ExportableAttention(self.qkv_format, self.is_selfattn)
         self.backend = "torch"
 
     def _exportable_norm(self):
