@@ -49,7 +49,7 @@ SHAPE_SPECS = {
     "control_B_T_H_W_D": ["B", "T", "H", "W", "HS*DS"],
     "hints": ["BC", "B", "T", "H", "W", "HS*DS"],
     "emb_B_T_D": ["B", "T", "HS*DS"],
-    "crossattn_emb": ["B", "T", "HX*DX"],
+    "crossattn_emb": ["B", "N", "HX*DX"],
     "rope_emb_T_H_W_1_1_D": ["T", "H", "W", "1", "1", "DS"],
     "adaln_lora_B_T_3D": ["B", "T", "3*HS*DS"],
     "control_context_scale": ["1"],
