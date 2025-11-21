@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import gc
 import math
 from typing import Any, List, Literal, Optional, Tuple
 
@@ -870,6 +872,110 @@ class MinimalV4LVGControlVaceDiT(MiniTrainDITImageContext):
                 )
 
         self._is_context_parallel_enabled = True
+
+    class ControlReceivingTensorRTBlock(BaseMiniTrainDIT.TensorRTBlock):
+        def __init__(self, engine_path: str, block_id_for_hints: int):
+            super().__init__(engine_path)
+            self.block_id_for_hints = block_id_for_hints
+
+        def forward(self, x_B_T_H_W_D, hints, control_context_scale, emb_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D,
+                    extra_per_block_pos_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+
+            _, T, H, W, _ = x_B_T_H_W_D.shape
+            rope_emb_T_H_W_1_1_D = rope_emb_L_1_1_D.unflatten(0, (T, H, W))
+            out_B_T_H_W_D = torch.empty_like(x_B_T_H_W_D)
+
+            # Usually extra_per_block_pos_emb is empty here. Just safeguard
+            if extra_per_block_pos_emb is not None:
+                print("Apply extra_per_block_pos_emb before TRT blocks")
+                x_B_T_H_W_D = x_B_T_H_W_D + extra_per_block_pos_emb
+
+            # FIXME: This weight should be handled at entry
+            if not isinstance(control_context_scale, torch.Tensor):
+                control_context_scale = torch.tensor([control_context_scale],
+                                                     dtype=torch.bfloat16, device=x_B_T_H_W_D.device)
+
+            # FIXME: Next time, need to check tensor shape every time we trace so that we'll notice this emb_B_T_D could contain one broadcasting dim 
+            def _bcast_T(t):
+                if t.shape[1] < T:
+                    t = t + torch.zeros(1, T, 1, dtype=t.dtype, device=t.device)
+                return t
+            emb_B_T_D = _bcast_T(emb_B_T_D)
+            adaln_lora_B_T_3D = _bcast_T(adaln_lora_B_T_3D)
+
+            self.context_set_input('x_B_T_H_W_D', x_B_T_H_W_D)
+            if self.block_id_for_hints is not None and hints is not None:
+                hints_N_XXXX = torch.stack(hints)
+                self.context_set_input('hints', hints_N_XXXX)
+                self.context_set_input('control_context_scale', control_context_scale)
+            self.context_set_input('emb_B_T_D', emb_B_T_D)
+            self.context_set_input('crossattn_emb', crossattn_emb)
+            self.context_set_input('rope_emb_T_H_W_1_1_D', rope_emb_T_H_W_1_1_D)
+            self.context_set_input('adaln_lora_B_T_3D', adaln_lora_B_T_3D)
+            self.context_set_output(out_B_T_H_W_D)
+
+            self.trt_stream.wait_stream(self.pyt_stream)
+            self.context.execute_async_v3(self.trt_stream.cuda_stream)
+            self.pyt_stream.wait_stream(self.trt_stream)
+
+            return out_B_T_H_W_D
+
+    class ControlProducingTensorRTBlock(BaseMiniTrainDIT.TensorRTBlock):
+        def __init__(self, engine_path: str, block_idx: int):
+            super().__init__(engine_path)
+            self.block_idx = block_idx
+
+        def forward(self, c, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D,
+                    extra_per_block_pos_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+            B, T, H, W, HIDDEN = x_B_T_H_W_D.shape
+            rope_emb_T_H_W_1_1_D = rope_emb_L_1_1_D.unflatten(0, (T, H, W))
+            NC = 2 if self.block_idx == 0 else c.shape[0] + 1
+            out_B_T_H_W_D = torch.empty((NC, B, T, H, W, HIDDEN), dtype=c.dtype, device=c.device)
+
+            # Usually extra_per_block_pos_emb is empty here. Just safeguard
+            if extra_per_block_pos_emb is not None:
+                print("Apply extra_per_block_pos_emb before TRT blocks")
+                x_B_T_H_W_D = x_B_T_H_W_D + extra_per_block_pos_emb
+
+            # FIXME: Next time, need to check tensor shape every time we trace so that we'll notice this emb_B_T_D could contain one broadcasting dim 
+            def _bcast_T(t):
+                if t.shape[1] < T:
+                    t = t + torch.zeros(1, T, 1, dtype=t.dtype, device=t.device)
+                return t
+            emb_B_T_D = _bcast_T(emb_B_T_D)
+            adaln_lora_B_T_3D = _bcast_T(adaln_lora_B_T_3D)
+
+            self.context_set_input('c', c)
+            if self.block_idx == 0:
+                self.context_set_input('x_B_T_H_W_D', x_B_T_H_W_D)
+            self.context_set_input('emb_B_T_D', emb_B_T_D)
+            self.context_set_input('crossattn_emb', crossattn_emb)
+            self.context_set_input('rope_emb_T_H_W_1_1_D', rope_emb_T_H_W_1_1_D)
+            self.context_set_input('adaln_lora_B_T_3D', adaln_lora_B_T_3D)
+            self.context_set_output(out_B_T_H_W_D)
+
+            self.trt_stream.wait_stream(self.pyt_stream)
+            self.context.execute_async_v3(self.trt_stream.cuda_stream)
+            self.pyt_stream.wait_stream(self.trt_stream)
+
+            return out_B_T_H_W_D
+
+    def load_trt(self, engine_dir):
+        # Load TRT for base blocks
+        self.trt_engine_dir = engine_dir
+        for iblock in range(len(self.control_blocks)):
+            self.control_blocks[iblock] = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            trt_engine_file = os.path.join(engine_dir, f"cosmos_transfer2.5_controlnet_block{iblock}.trt")
+            self.control_blocks[iblock] = MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock(trt_engine_file, iblock)
+        for iblock in range(len(self.blocks)):
+            block_id_orig = self.blocks[iblock].block_id
+            self.blocks[iblock] = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            trt_engine_file = os.path.join(engine_dir, f"cosmos_transfer2.5_net_block{iblock}.trt")
+            self.blocks[iblock] = MinimalV4LVGControlVaceDiT.ControlReceivingTensorRTBlock(trt_engine_file, block_id_orig)
 
     def forward(
         self,

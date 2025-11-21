@@ -15,8 +15,10 @@
 
 import collections
 import math
+import gc
+import os
 from collections import namedtuple
-from collections.abc import Sequence
+from collections.abc import Sequence, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Tuple, Union
@@ -1774,6 +1776,86 @@ class MiniTrainDIT(WeightTrainingStat):
             t=self.patch_temporal,
         )
         return x_B_C_Tt_Hp_Wp
+
+    class TensorRTBlock(torch.nn.Module):
+        def __init__(self, engine_path: str):
+            super().__init__()
+
+            import packages._trt_plugins as trt_inference
+            import tensorrt as trt
+
+            # Load engine
+            with open(engine_path, "rb") as f:
+                engine_serialized = f.read()
+            self.trt_stream = trt_inference.trt_stream
+            self.pyt_stream = trt_inference.pyt_stream
+            self.engine = trt_inference.trt_runtime.deserialize_cuda_engine(engine_serialized)
+            self.context = trt_inference.create_execution_context_from_pool(self.engine)
+            self.context_set_input = lambda name, tensor: trt_inference.trt_set_tensor_check(self.context, name, tensor, check_shape=True)
+            self.context_set_output = lambda tensor: trt_inference.trt_set_tensor_check(self.context, 'output', tensor, check_shape=False)
+            self.context_get_output_dtype = lambda : trt_inference.trt_get_tensor_dtype('output')
+            log.info(f"TRT engine loaded: {engine_path}")
+
+            # Compatibility hack
+            self.self_attn = MiniTrainDIT.TensorRTBlock.ContextParallelSetter(self)
+            self.self_attn.set_context_parallel_group(process_group=None, ranks=[0], stream=torch.cuda.current_stream())
+
+        class ContextParallelSetter:
+            def __init__(self, block):
+                self.block = block
+
+            def set_context_parallel_group(self, *args, **kwargs):
+                return self.block.set_context_parallel_group(*args, **kwargs)
+
+        def set_context_parallel_group(
+            self, process_group: ProcessGroup|None, ranks: Sequence[int], stream: torch.cuda.Stream
+        ):
+            from packages._trt_plugins import context_registry
+            if process_group is not None:
+                context_registry.set_cp_procgrp(ranks, process_group)
+                context_registry.set_loc_cp_ranks(ranks)
+            else:
+                context_registry.set_loc_cp_ranks([])
+
+        def forward(
+            self,
+            x_B_T_H_W_D: torch.Tensor,
+            t_embedding_B_T_D: torch.Tensor,
+            crossattn_emb: torch.Tensor,
+            **kwargs: Mapping,
+        ) -> torch.Tensor:
+
+            B, T, H, W, _ = x_B_T_H_W_D.shape
+
+            # Treat rope_emb_L_1_1_D as requried
+            rope_emb_L_1_1_D = kwargs.pop('rope_emb_L_1_1_D')
+            rope_emb_T_H_W_1_1_D = rope_emb_L_1_1_D.unflatten(0, (T, H, W))
+            out_B_T_H_W_D = torch.empty_like(x_B_T_H_W_D)
+
+            self.context_set_input('x_B_T_H_W_D', x_B_T_H_W_D)
+            self.context_set_input('emb_B_T_D', t_embedding_B_T_D)
+            self.context_set_input('crossattn_emb', crossattn_emb)
+            self.context_set_input('rope_emb_T_H_W_1_1_D', rope_emb_T_H_W_1_1_D)
+            for name, tensor in kwargs.items():
+                if tensor is not None:
+                    self.context_set_input(name, tensor)
+            self.context_set_output(out_B_T_H_W_D)
+
+            self.trt_stream.wait_stream(self.pyt_stream)
+            self.context.execute_async_v3(self.trt_stream.cuda_stream)
+            self.pyt_stream.wait_stream(self.trt_stream)
+
+            return out_B_T_H_W_D
+
+    def load_trt(self, engine_dir):
+        # Load TRT for base blocks
+        self.trt_engine_dir = engine_dir
+        for iblock in range(len(self.blocks)):
+            self.blocks[iblock] = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            trt_engine_file = os.path.join(engine_dir, f"cosmos_transfer2.5_net_block{iblock}.trt")
+            self.blocks[iblock] = MiniTrainDIT.TensorRTBlock(trt_engine_file)
 
     def forward(
         self,

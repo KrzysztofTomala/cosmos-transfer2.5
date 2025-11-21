@@ -58,10 +58,13 @@ def create_execution_context_from_pool(engine):
 
 def trt_set_tensor_check(context, name, tensor, check_shape=True):
     assert tensor.is_contiguous(), f"contiguous tensor expected: {name}"
-    assert _trt2pt_dtype[context.engine.get_tensor_dtype(name)] == tensor.dtype, f"incompatible dtype for tensor {name}"
+    assert trt_get_tensor_dtype(context, name) == tensor.dtype, f"incompatible dtype for tensor {name}: {tensor.dtype}"
     if check_shape:
-        assert context.set_input_shape(name, tensor.shape), f"incompatible shape for tensor {name}"
+        assert context.set_input_shape(name, tensor.shape), f"incompatible shape for tensor {name}: {tensor.shape}"
     context.set_tensor_address(name, tensor.data_ptr())
+
+def trt_get_tensor_dtype(context, name):
+    return _trt2pt_dtype[context.engine.get_tensor_dtype(name)]
 
 # Utils for attention plugins
 
@@ -108,13 +111,14 @@ try:
         outputs: Tuple[trtp.Tensor],
         stream: int
     ) -> None:
+        # Prepare Tensors
+        q_t, k_t, v_t, out_t = map(_recast, (q, k, v, outputs[0]))
+
+        # Prepare env
+        ext_stream = torch.cuda.ExternalStream(stream)
         cp_group72 = get_loc_cp_ranks()
         if len(cp_group72) < 1:
             cp_group72 = [q_t.device.index]
-        ext_stream = torch.cuda.ExternalStream(stream)
-
-        # Prepare Tensors
-        q_t, k_t, v_t, out_t = map(_recast, (q, k, v, outputs[0]))
 
         with torch.cuda.stream(ext_stream):
             # Prepare Op
