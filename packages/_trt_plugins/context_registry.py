@@ -59,7 +59,7 @@ def get_a2a_op(cp_group_list, backend="sageattn") -> MinimalA2AAttnOp:
         if backend == "sageattn":
             loc_attn = lambda q, k, v: sageattention.sageattn(q, k, v, tensor_layout="NHD")
         elif backend == "flashinfer_vx":
-            loc_attn = lambda q, k, v: flashinfer_vx.sageattn(q, k, v, smooth=False)
+            loc_attn = lambda q, k, v: flashinfer_vx.qattn(q, k, v)
         elif backend == "torch":
             loc_attn = lambda q, k, v: torch.nn.functional.scaled_dot_product_attention(
                 q.transpose(1, 2),
