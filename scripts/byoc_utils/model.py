@@ -92,46 +92,76 @@ class OperationalBounds:
 
 
 class ModelMeta:
-    def __init__(self, model_variant: ModelVariant):
-        self._variant = model_variant
+    def __init__(self, model_variant: ModelVariant | str | list[ModelVariant | str]):
+        # Normalize to list of ModelVariants
+        if isinstance(model_variant, list):
+            self._variants = [ModelVariant(v) if isinstance(v, str) else v for v in model_variant]
+        elif isinstance(model_variant, str):
+            self._variants = [ModelVariant(model_variant)]
+        else:
+            self._variants = [model_variant]
 
     @property
     def variant(self):
-        return self._variant
+        """Returns the first variant for backward compatibility."""
+        return self._variants[0]
+
+    @property
+    def is_multicontrol(self):
+        """Returns True if multiple unique hint keys are present."""
+        return len(set(self.hint_keys)) > 1
 
     @property
     def domain(self):
-        tokens = self._variant.value.split('/')
+        # For multicontrol, use first variant's domain
+        tokens = self._variants[0].value.split('/')
         if len(tokens) == 1:
             return "general"
         return tokens[0]
 
     @property
     def hint_key(self):
-        tokens = self._variant.value.split('/')
+        tokens = self._variants[0].value.split('/')
         if len(tokens) == 1:
             return tokens[0]
         return tokens[1]
 
     @property
+    def hint_keys(self):
+        hint_keys = []
+        for variant in self._variants:
+            tokens = variant.value.split('/')
+            hint_key = tokens[0] if len(tokens) == 1 else tokens[1]
+            hint_keys.append(hint_key)
+        return hint_keys
+
+    @property
     def name(self):
-        return self._variant.value
+        if self.is_multicontrol:
+            return "+".join([v.value for v in self._variants])
+        return self._variants[0].value
 
     @property
     def safe_name(self):
-        return self.name.replace("/", "-")
+        return self.name.replace("/", "-").replace("+", "_")
 
     @property
     def calibration_dataset(self):
-        return CONTROL2WORLD_ASSETS.format(modality=self.safe_name)
+        # Use "multicontrol" for multicontrol instead of joined hint keys
+        modality = "multicontrol" if self.is_multicontrol else self.safe_name
+        return CONTROL2WORLD_ASSETS.format(modality=modality)
 
     @classmethod
-    def from_text(cls, value: str):
-        try:
-            model_variant = ModelVariant(value)
-        except ValueError as e:
-            raise ValueError(f"Choose either {VARIANTS}.") from e
-        return cls(model_variant)
+    def from_text(cls, value: list[str]):
+        """Create ModelMeta from list of strings. Determines multicontrol based on unique hint keys."""
+        # Validate all variants in the list
+        variants = []
+        for v in value:
+            try:
+                variants.append(ModelVariant(v))
+            except ValueError as e:
+                raise ValueError(f"Invalid variant '{v}'. Choose from {VARIANTS}.") from e
+        return cls(variants)
 
 
 def get_model_dimensions(model_config: Config, resolution) -> ModelDimensions:

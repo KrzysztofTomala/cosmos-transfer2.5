@@ -1,0 +1,17 @@
+{
+    "model_variant": ["edge", "vis", "depth", "seg"],
+    "resolution": "720",
+    "fps": 16,
+    "dit_path": "",
+    "aspect_ratio": "9,16",
+    "num_conditional_frames": 1,
+    "guidance": 3,
+    "seed": 0,
+    "num_gpus": 1,
+    "disable_guardrail": false,
+    "offload_guardrail": false,
+    "trt_release_workspace": false,
+    "trt_engine_prefix": "",
+    "benchmark": false,
+    "use_cuda_graphs": false
+}

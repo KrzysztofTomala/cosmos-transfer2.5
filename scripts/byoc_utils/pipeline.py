@@ -126,8 +126,9 @@ def setup_pipeline(args: PipelineArgs):
                 log.info(f"Using existing context parallel group with {current_cp_size} GPUs")
 
     # Load models
-    log.info(f"Initializing ControlVideo2WorldInference for model: {args.model.variant.name}")
-    inference = Control2WorldInference(setup_args, batch_hint_keys=[args.model.hint_key])
+    log.info(f"Initializing ControlVideo2WorldInference for model: {args.model.name}")
+    log.info(f"Using batch_hint_keys: {args.model.hint_keys}")
+    inference = Control2WorldInference(setup_args, batch_hint_keys=args.model.hint_keys)
     return inference.inference_pipeline
 
 
@@ -136,7 +137,10 @@ def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[Control
         config: dict = json.load(f)
     if overrides:
         config.update(overrides)
-    config.setdefault("model", ModelMeta.from_text(config["model_variant"]))
+    model_variant = config["model_variant"]
+    if not isinstance(model_variant, list):
+        model_variant = [model_variant]
+    config.setdefault("model", ModelMeta.from_text(model_variant))
     args = PipelineArgs(**config)
     pipe = setup_pipeline(args)
     dims = get_model_dimensions(pipe.config, config["resolution"])

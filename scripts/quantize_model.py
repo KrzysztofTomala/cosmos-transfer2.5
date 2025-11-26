@@ -47,7 +47,7 @@ class CalibrationSample:
         return ",".join([str(self.control_weights[k]) for k in self.control_keys])
 
     @classmethod
-    def from_json(cls, data: dict, modality: str) -> Self:
+    def from_json(cls, data: dict, modality: list[str]) -> Self:
         # Parse prompt
         if data.get("prompt"):
             prompt = data["prompt"]
@@ -66,43 +66,54 @@ class CalibrationSample:
         if not os.path.exists(video_path):
             raise ValueError(f"Video file does not exist: {video_path}")
 
-        # Parse control configuration
-        if not ((control_config := data.get(modality)) and isinstance(control_config, dict)):
-            raise ValueError(f'Control "{modality}" configuration not found in sample, must specify'
-                             f' `{modality}.control_weight` and `{modality}.control_path` properties.')
+        # Parse control configuration for each modality
+        control_keys = []
+        control_paths = {}
+        control_weights = {}
 
-        control_path = control_config.get("control_path")
-        if not control_path:
-            if modality in ["edge", "vis"]:
-                log.warning(f"To compute {modality} control for sample online.")
+        for mod in modality:
+            if not ((control_config := data.get(mod)) and isinstance(control_config, dict)):
+                raise ValueError(f'Control "{mod}" configuration not found in sample, must specify'
+                                 f' `{mod}.control_weight` and `{mod}.control_path` properties.')
+
+            control_path = control_config.get("control_path")
+            if not control_path:
+                if mod in ["edge", "vis"]:
+                    log.warning(f"To compute {mod} control for sample online.")
+                else:
+                    raise ValueError(f"Sample must specify a control video (`{mod}.control_path`). Use "
+                                     f"`examples/inference.py` for online control computation.")
             else:
-                raise ValueError(f"Sample must specify a control video (`{modality}.control_path`). Use "
-                                 f"`examples/inference.py` for online control computation.")
-        else:
-            control_path = os.path.join(ASSETS_ROOT, control_path)
-            if not os.path.exists(control_path):
-                raise ValueError(f"Control file does not exist: {control_path}")
+                control_path = os.path.join(ASSETS_ROOT, control_path)
+                if not os.path.exists(control_path):
+                    raise ValueError(f"Control file does not exist: {control_path}")
 
-        control_weight = control_config.get("control_weight", 1.0)
-        if not isinstance(control_weight, int | float) or control_weight < 0.0:
-            raise ValueError(f"Control weight must be non-negative: {control_weight}")
+            control_weight = control_config.get("control_weight", 1.0)
+            if not isinstance(control_weight, int | float) or control_weight < 0.0:
+                raise ValueError(f"Control weight must be non-negative: {control_weight}")
+
+            control_keys.append(mod)
+            control_paths[mod] = control_path
+            control_weights[mod] = control_weight
 
         return CalibrationSample(
             prompt=prompt,
             video_path=video_path,
-            control_keys=[modality],
-            control_paths={modality: control_path},
-            control_weights={modality: control_weight},
+            control_keys=control_keys,
+            control_paths=control_paths,
+            control_weights=control_weights,
         )
 
 
 def make_parser():
     # Command line args
     parser = argparse.ArgumentParser(
-        description="Just-in-time post-training quantization of a single control checkpoint. Note, for multi control, "
-                    "quantize each base modality separately.")
-    parser.add_argument("--model_variant", choices=VARIANTS, required=True, type=str,
-                        help="Model variant to use for control-video-to-world generation")
+        description="Just-in-time post-training quantization for control checkpoint(s). "
+                    "Supports both single and multi-control. Provide multiple variants for multicontrol mode.")
+    parser.add_argument("--model_variant", nargs='+', choices=VARIANTS, required=True, type=str,
+                        help="Model variant(s) to use for control-video-to-world generation. "
+                             "Provide single variant (e.g., edge) for single control, "
+                             "or multiple variants (e.g., edge vis depth seg) for multicontrol mode.")
     parser.add_argument("--output_dir", type=str, default="output",
                         help="Folder to save quantized checkpoint.")
     parser.add_argument("--checkpoint_name", type=str, default="",
@@ -200,7 +211,7 @@ def prepare_calibration_data(args: argparse.Namespace, quant_config) -> list[Cal
     samples: list[CalibrationSample] = []
     for idx, sample in enumerate(dataset):
         try:
-            samples.append(CalibrationSample.from_json(sample, modality=args.model.hint_key))
+            samples.append(CalibrationSample.from_json(sample, modality=args.model.hint_keys))
         except ValueError as ex:
             log.warning(f"Skipping item {idx}: {ex}")
             continue
@@ -249,10 +260,12 @@ def calibrate_dit_denoiser(pipe, args: argparse.Namespace, quant_config):
 
 
 def main(cmdargs) -> str:
-    model_meta = ModelMeta.from_text(cmdargs.model_variant)
+    model_variant = cmdargs.model_variant if isinstance(cmdargs.model_variant, list) else [cmdargs.model_variant]
+    model_meta = ModelMeta.from_text(model_variant)
 
     # Base args
-    with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", "optim_dit_args.json"), "rt") as f:
+    input_file = "optim_dit_args_multicontrol.json" if len(model_variant) > 1 else "optim_dit_args.json"
+    with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", input_file), "rt") as f:
         args: dict = json.load(f)
         args.update({
             "model": model_meta,
