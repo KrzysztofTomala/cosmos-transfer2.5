@@ -244,7 +244,7 @@ def fuse_qkv_projections(dit_controlnet, is_multicontrol: bool):
     blocks = []
     blocks.extend(dit_controlnet.blocks)
     if is_multicontrol:
-        for nc in dit_controlnet.num_control_branches:
+        for nc in range(dit_controlnet.num_control_branches):
             blocks.extend(getattr(dit_controlnet, f"control_blocks_{nc}"))
     else:
         blocks.extend(dit_controlnet.control_blocks)
