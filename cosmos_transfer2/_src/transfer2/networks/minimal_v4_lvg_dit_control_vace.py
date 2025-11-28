@@ -961,21 +961,42 @@ class MinimalV4LVGControlVaceDiT(MiniTrainDITImageContext):
             return out_B_T_H_W_D
 
     def load_trt(self, engine_dir):
-        # Load TRT for base blocks
+        def _init(blocks, block_index, block_id, engine_label, trt_class):
+            blocks[block_index] = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            trt_engine_file = os.path.join(engine_dir, engine_label)
+            blocks[block_index] = trt_class(trt_engine_file, block_id)
+
         self.trt_engine_dir = engine_dir
-        for iblock in range(len(self.control_blocks)):
-            self.control_blocks[iblock] = None
-            gc.collect()
-            torch.cuda.empty_cache()
-            trt_engine_file = os.path.join(engine_dir, f"cosmos_transfer2.5_controlnet_block{iblock}.trt")
-            self.control_blocks[iblock] = MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock(trt_engine_file, iblock)
+        if self.num_control_branches > 1:
+            # Multi-control blocks
+            for nc in range(self.num_control_branches):
+                control_blocks = getattr(self, f"control_blocks_{nc}")
+                for iblock in range(len(self.control_blocks)):
+                    _init(
+                        control_blocks,
+                        iblock,
+                        iblock,
+                        f"cosmos_transfer2.5_controlnet_branch{nc}_block{iblock}.trt",
+                        MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock)
+        else:
+            # Single-control blocks
+            for iblock in range(len(self.control_blocks)):
+                _init(
+                    self.control_blocks,
+                    iblock,
+                    iblock,
+                    f"cosmos_transfer2.5_controlnet_block{iblock}.trt",
+                    MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock)
+        # Base blocks
         for iblock in range(len(self.blocks)):
-            block_id_orig = self.blocks[iblock].block_id
-            self.blocks[iblock] = None
-            gc.collect()
-            torch.cuda.empty_cache()
-            trt_engine_file = os.path.join(engine_dir, f"cosmos_transfer2.5_net_block{iblock}.trt")
-            self.blocks[iblock] = MinimalV4LVGControlVaceDiT.ControlReceivingTensorRTBlock(trt_engine_file, block_id_orig)
+            _init(
+                self.blocks,
+                iblock,
+                self.blocks[iblock].block_id,
+                f"cosmos_transfer2.5_net_block{iblock}.trt",
+                MinimalV4LVGControlVaceDiT.ControlReceivingTensorRTBlock)
 
     def forward(
         self,

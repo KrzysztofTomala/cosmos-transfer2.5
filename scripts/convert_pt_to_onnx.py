@@ -34,8 +34,10 @@ from scripts.quantize_model import QUANTIZATION_MODES, VARIANTS, ModelMeta
 def make_parser():
     # Command line args
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_variant", choices=VARIANTS, required=True, type=str,
-                        help="Model variant to use for control-video-to-world generation")
+    parser.add_argument("--model_variant", nargs='+', choices=VARIANTS, required=True, type=str,
+                        help="Model variant(s) to use for control-video-to-world generation. "
+                             "Provide single variant (e.g., edge) for single control, "
+                             "or multiple variants (e.g., edge vis depth seg) for multicontrol mode.")
     parser.add_argument("--modelopt_checkpoint", type=str, required=True, help="Path to ModelOPT-quantized checkpoint.")
     parser.add_argument("--output_dir", type=str, default="output", help="Folder to export ONNX files to.")
     parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
@@ -67,11 +69,21 @@ def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmd
         export_block_as_onnx(onnx_dir, inputs, block_meta, dit_controlnet.blocks[bidx])
 
     # Export control DiT blocks
-    c = dummy_tensors["control_B_T_H_W_D"]
-    for bidx in tqdm.trange(dims.BC, disable=False, desc="Exporting control block to ONNX"):
-        block_meta = BlockMeta(bidx, is_control=True, receives_control=False)
-        inputs = {"c": c, **{key: dummy_tensors[key] for key in block_meta.fixed_inputs}}
-        c = export_block_as_onnx(onnx_dir, inputs, block_meta, dit_controlnet.control_blocks[bidx])
+    if model.is_multicontrol:
+        for control_branch in range(len(model.variants)):
+            c = dummy_tensors["control_B_T_H_W_D"]
+            control_blocks = getattr(dit_controlnet, f"control_blocks_{control_branch}")
+            for bidx in tqdm.trange(
+                    dims.BC, disable=False, desc=f"Exporting control block to ONNX ({control_branch=})"):
+                block_meta = BlockMeta(bidx, is_control=True, receives_control=False, control_branch=control_branch)
+                inputs = {"c": c, **{key: dummy_tensors[key] for key in block_meta.fixed_inputs}}
+                c = export_block_as_onnx(onnx_dir, inputs, block_meta, control_blocks[bidx])
+    else:
+        c = dummy_tensors["control_B_T_H_W_D"]
+        for bidx in tqdm.trange(dims.BC, disable=False, desc="Exporting control block to ONNX"):
+            block_meta = BlockMeta(bidx, is_control=True, receives_control=False)
+            inputs = {"c": c, **{key: dummy_tensors[key] for key in block_meta.fixed_inputs}}
+            c = export_block_as_onnx(onnx_dir, inputs, block_meta, dit_controlnet.control_blocks[bidx])
 
     return onnx_dir
 
@@ -98,7 +110,7 @@ def export_block_as_onnx(
     output = block(*inputs)
 
     # Export to ONNX
-    onnx_file = os.path.join(onnx_dir,  f"cosmos_transfer2.5_{meta.block_type}_block{meta.block_index}.onnx")
+    onnx_file = os.path.join(onnx_dir,  f"{meta.block_label}.onnx")
     with torch.inference_mode():
         torch.onnx.export(
             block,

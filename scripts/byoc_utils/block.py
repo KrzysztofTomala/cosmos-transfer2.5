@@ -98,9 +98,17 @@ class BlockMeta:
     is_control: bool
     receives_control: bool
 
+    control_branch: int = -1
+
     @property
     def block_type(self):
         return "controlnet" if self.is_control else "net"
+
+    @property
+    def block_label(self):
+        if self.control_branch > -1:
+            return f"cosmos_transfer2.5_{self.block_type}_branch{self.control_branch}_block{self.block_index}"
+        return f"cosmos_transfer2.5_{self.block_type}_block{self.block_index}"
 
     @property
     def wrapper_class(self):

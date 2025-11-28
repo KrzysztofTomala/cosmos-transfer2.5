@@ -107,6 +107,10 @@ class ModelMeta:
         return self._variants[0]
 
     @property
+    def variants(self):
+        return self._variants
+
+    @property
     def is_multicontrol(self):
         """Returns True if multiple unique hint keys are present."""
         return len(set(self.hint_keys)) > 1

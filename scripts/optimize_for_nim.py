@@ -12,7 +12,7 @@ import argparse
 import logging
 import os
 
-from huggingface_hub.utils._auth import get_token
+# from huggingface_hub.utils._auth import get_token
 
 
 def make_parser():
@@ -101,8 +101,8 @@ def main(cmdargs):
     from cosmos_transfer2._src.imaginaire.utils import log
     log.info(f"Preparing to optimize Cosmos-Transfer2.5-2B. Working folder: {args.output_dir}")
 
-    # Check if is authenticated with HF before download-triggering first-party imports for clean error message
-    assert get_token(), "No HF credentials set, set environment variable `HF_TOKEN` or authenticate via `hf auth login`"
+    # # Check if is authenticated with HF before download-triggering first-party imports for clean error message
+    # assert get_token(), "No HF credentials set, set environment variable `HF_TOKEN` or authenticate via `hf auth login`"
 
     # Quantize custom checkpoint
     modelopt_checkpoint = quantize_checkpoint(cmdargs)

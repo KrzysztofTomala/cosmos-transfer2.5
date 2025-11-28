@@ -36,13 +36,13 @@ from scripts.byoc_utils.trt import (
 import packages._trt_plugins as _
 from packages._trt_plugins.context_registry import set_loc_cp_ranks
 
-BLOCK_FILE = "cosmos_transfer2.5_{block_type}_block{block_index}.{ext}"
-
 
 def make_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_variant", choices=VARIANTS, required=True, type=str,
-                        help="Model variant to use for control-video-to-world generation")
+    parser.add_argument("--model_variant", nargs='+', choices=VARIANTS, required=True, type=str,
+                        help="Model variant(s) to use for control-video-to-world generation. "
+                             "Provide single variant (e.g., edge) for single control, "
+                             "or multiple variants (e.g., edge vis depth seg) for multicontrol mode.")
     parser.add_argument("--output_dir", type=str, default="output",
                         help="Working directory of where to retrieve ONNX files from and export TRT engines to.")
     parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
@@ -71,9 +71,10 @@ class CosmosTRTEngineBuilder:
         cc_major, cc_minor = torch.cuda.get_device_capability()
         self.onnx_dir = os.path.join(root_dir, f"onnx_{model_meta.safe_name}_2B_{quant_mode}")
         self.trt_dir = os.path.join(root_dir, f"trt_{model_meta.safe_name}_2B_{quant_mode}", f"sm{cc_major}{cc_minor}")
-        self.onnx_path = os.path.join(self.onnx_dir, BLOCK_FILE)
-        self.engine_path = os.path.join(self.trt_dir, BLOCK_FILE)
+        self.onnx_path = os.path.join(self.onnx_dir, "{block_label}.onnx")
+        self.engine_path = os.path.join(self.trt_dir, "{block_label}.trt")
 
+        self.model_meta = model_meta
         self.model_dims = dims
         self.control_receiving_layers = control_receiving_layers
 
@@ -85,13 +86,21 @@ class CosmosTRTEngineBuilder:
             receives_control = block_index in self.control_receiving_layers
             block_meta = BlockMeta(block_index, is_control=False, receives_control=receives_control)
             self._process_block(block_meta, optimization_level, test_engine=test_engines)
-        for block_index in tqdm.trange(self.model_dims.BC, disable=False, desc="Processing control block"):
-            block_meta = BlockMeta(block_index, is_control=True, receives_control=False)
-            self._process_block(block_meta, optimization_level, test_engine=test_engines)
+        if self.model_meta.is_multicontrol:
+            for control_branch in range(len(self.model_meta.variants)):
+                for block_index in tqdm.trange(
+                        self.model_dims.BC, disable=False, desc=f"Processing control block ({control_branch=})"):
+                    block_meta = BlockMeta(
+                        block_index, is_control=True, receives_control=False, control_branch=control_branch)
+                    self._process_block(block_meta, optimization_level, test_engine=test_engines)
+        else:
+            for block_index in tqdm.trange(self.model_dims.BC, disable=False, desc="Processing control block"):
+                block_meta = BlockMeta(block_index, is_control=True, receives_control=False)
+                self._process_block(block_meta, optimization_level, test_engine=test_engines)
 
     def _process_block(self, meta: BlockMeta, optimization_level: int, test_engine: bool):
-        onnx_file = self.onnx_path.format(block_type=meta.block_type, block_index=meta.block_index, ext='onnx')
-        engine_file = self.engine_path.format(block_type=meta.block_type, block_index=meta.block_index, ext='trt')
+        onnx_file = self.onnx_path.format(block_label=meta.block_label)
+        engine_file = self.engine_path.format(block_label=meta.block_label)
 
         # Build
         engine_serialized = trt_engine_from_onnx_block(

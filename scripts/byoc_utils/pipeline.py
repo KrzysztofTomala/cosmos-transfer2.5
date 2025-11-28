@@ -133,7 +133,16 @@ def setup_pipeline(args: PipelineArgs):
 
 
 def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[ControlVideo2WorldInference, PipelineArgs, ModelDimensions]:
-    with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", "optim_dit_args.json"), "rt") as f:
+    variants = overrides.pop("model_variant")
+    if isinstance(variants, list):
+        input_file = "optim_dit_args_multicontrol.json"
+    else:
+        variants = [variants]
+        input_file = "optim_dit_args.json"
+    overrides["model_variant"] = variants
+
+    # Base args
+    with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", input_file), "rt") as f:
         config: dict = json.load(f)
     if overrides:
         config.update(overrides)
