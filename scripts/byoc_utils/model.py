@@ -237,3 +237,16 @@ def make_dummy_tensors(dims: ModelDimensions, with_outputs: bool = False) -> dic
         tensors["output_hints"] = tensor.unsqueeze(0).repeat_interleave(dims.BC + 1, dim=0)
 
     return tensors
+
+
+def fuse_qkv_projections(dit_controlnet, is_multicontrol: bool):
+    """Fuse Q, K, V linear projections in Attention modules, when dimensions align"""
+    blocks = []
+    blocks.extend(dit_controlnet.blocks)
+    if is_multicontrol:
+        for nc in dit_controlnet.num_control_branches:
+            blocks.extend(getattr(dit_controlnet, f"control_blocks_{nc}"))
+    else:
+        blocks.extend(dit_controlnet.control_blocks)
+    for block in blocks:
+        block.self_attn.fuse_qkv_proj()  # self-attention only, cross-attention has Sq != Sk

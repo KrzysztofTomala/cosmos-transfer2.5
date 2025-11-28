@@ -26,7 +26,7 @@ from cosmos_transfer2._src.transfer2.networks.minimal_v4_lvg_dit_control_vace im
     ControlEncoderDiTBlock,
 )
 from scripts.byoc_utils.block import BlockMeta
-from scripts.byoc_utils.model import ModelDimensions, make_dummy_tensors
+from scripts.byoc_utils.model import ModelDimensions, make_dummy_tensors, fuse_qkv_projections
 from scripts.byoc_utils.pipeline import setup_pipeline_from_defaults
 from scripts.quantize_model import QUANTIZATION_MODES, VARIANTS, ModelMeta
 
@@ -50,8 +50,7 @@ def make_parser():
 # TODO(rafonsorodri): add support for NVFP4
 def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmdargs) -> str:
     # Fuse QKV projection
-    for block in dit_controlnet.blocks + dit_controlnet.control_blocks:
-        block.self_attn.fuse_qkv_proj()  # self-attention only, cross-attention has Sq != Sk
+    fuse_qkv_projections(dit_controlnet, model.is_multicontrol)
 
     # ModelOPT quantization schema
     assert os.path.exists(cmdargs.modelopt_checkpoint), "ModelOPT-quantized checkpoint not found"

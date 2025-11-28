@@ -30,7 +30,7 @@ import tqdm
 from cosmos_transfer2._src.imaginaire.utils import distributed, log
 from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
 from cosmos_transfer2.config import DEFAULT_NEGATIVE_PROMPT
-from scripts.byoc_utils.model import ASSETS_ROOT, SCRIPTS_ROOT, VARIANTS
+from scripts.byoc_utils.model import ASSETS_ROOT, SCRIPTS_ROOT, VARIANTS, fuse_qkv_projections
 from scripts.byoc_utils.pipeline import QUANTIZATION_MODES, ModelMeta, PipelineArgs, setup_pipeline
 
 
@@ -248,8 +248,7 @@ def calibrate_dit_denoiser(pipe, args: argparse.Namespace, quant_config):
     dit_controlnet = pipe.model.net  # Contains base and control branches
 
     # Fuse QKV projection
-    for block in dit_controlnet.blocks + dit_controlnet.control_blocks:
-        block.self_attn.fuse_qkv_proj()
+    fuse_qkv_projections(dit_controlnet, args.model.is_multicontrol)
 
     def forward_loop(dit_controlnet):
         pipe.model.net = dit_controlnet
