@@ -960,15 +960,27 @@ class MinimalV4LVGControlVaceDiT(MiniTrainDITImageContext):
 
             return out_B_T_H_W_D
 
-    def load_trt(self, engine_dir):
-        # Load TRT for base blocks
-        self.trt_engine_dir = engine_dir
-        for iblock in range(len(self.control_blocks)):
-            self.control_blocks[iblock] = None
+    def load_trt_for_control(self, engine_dir, nc):
+        if self.num_control_branches > 1:
+            control_blocks = getattr(self, f"control_blocks_{nc}")
+        else:
+            control_blocks = self.control_blocks
+
+        for iblock in range(len(control_blocks)):
+            control_blocks[iblock] = None
             gc.collect()
             torch.cuda.empty_cache()
             trt_engine_file = os.path.join(engine_dir, f"cosmos_transfer2.5_controlnet_block{iblock}.trt")
-            self.control_blocks[iblock] = MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock(trt_engine_file, iblock)
+            control_blocks[iblock] = MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock(trt_engine_file, iblock)
+
+
+    def load_trt(self, engine_dir):
+        # Load TRT for base blocks
+        self.trt_engine_dir = engine_dir
+
+        if self.num_control_branches == 1:
+            self.load_trt_for_control(engine_dir, None)
+
         for iblock in range(len(self.blocks)):
             block_id_orig = self.blocks[iblock].block_id
             self.blocks[iblock] = None

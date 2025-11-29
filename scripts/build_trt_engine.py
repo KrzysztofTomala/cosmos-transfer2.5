@@ -48,6 +48,7 @@ def make_parser():
     parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
                         help="Quantization mode (FP8 or NVFP4)")
     parser.add_argument("-O", dest="optimization_level", type=int, default=3, help="TRT optimization level")
+    parser.add_argument("--controls_only", action="store_true", help="Build for control layers only (skip base layers).")
     parser.add_argument("--skip_testrun", action="store_true", help="Skip testrun")
     parser.add_argument("--resolution", choices=["480", "720"], default="720", type=str,
                         help="Resolution of the model to use for video-to-world generation")
@@ -77,16 +78,19 @@ class CosmosTRTEngineBuilder:
         self.model_dims = dims
         self.control_receiving_layers = control_receiving_layers
 
-    def build(self, optimization_level: int, test_engines: bool):
+    def build(self, optimization_level: int, test_engines: bool, controls_only: bool):
         assert os.path.exists(self.onnx_dir), f"Missing ONNX source folder: {self.onnx_dir}"
         os.makedirs(self.trt_dir, exist_ok=True)
+
+        for block_index in tqdm.trange(self.model_dims.BC, disable=False, desc="Processing control block"):
+            block_meta = BlockMeta(block_index, is_control=True, receives_control=False)
+            self._process_block(block_meta, optimization_level, test_engine=test_engines)
+        if controls_only:
+            return
 
         for block_index in tqdm.trange(self.model_dims.BK, disable=False, desc="Processing base block"):
             receives_control = block_index in self.control_receiving_layers
             block_meta = BlockMeta(block_index, is_control=False, receives_control=receives_control)
-            self._process_block(block_meta, optimization_level, test_engine=test_engines)
-        for block_index in tqdm.trange(self.model_dims.BC, disable=False, desc="Processing control block"):
-            block_meta = BlockMeta(block_index, is_control=True, receives_control=False)
             self._process_block(block_meta, optimization_level, test_engine=test_engines)
 
     def _process_block(self, meta: BlockMeta, optimization_level: int, test_engine: bool):
@@ -160,7 +164,9 @@ def main(cmdargs):
 
     builder = CosmosTRTEngineBuilder(
         args.output_dir, args.model, dims, control_receiving_layers, cmdargs.mode)
-    builder.build(optimization_level=cmdargs.optimization_level, test_engines=not cmdargs.skip_testrun)
+    builder.build(optimization_level=cmdargs.optimization_level,
+                  test_engines=not cmdargs.skip_testrun,
+                  controls_only=cmdargs.controls_only)
 
 
 if __name__ == "__main__":

@@ -55,6 +55,10 @@ class Args(pydantic.BaseModel):
     """
     trt_engine_dir: Path
     """Path to TRT engines"""
+    trt_engine_dir_format: Path
+    """Path format to multicontrol TRT engines (can be empty for single-control use)
+    You may specify something like 'output/trt_{}_2B_FP8'.
+    """
     setup: SetupArguments
     """Setup arguments. These can only be provided via CLI."""
     overrides: InferenceOverrides
@@ -76,6 +80,7 @@ def main(
 
     inference = Control2WorldInference(args.setup, batch_hint_keys=batch_hint_keys)
     inference.inference_pipeline.model.net.load_trt(str(args.trt_engine_dir / f"sm{get_sm_version(torch.cuda.current_device())}"))
+    inference.inference_pipeline.model.load_trt_multicontrol(str(args.trt_engine_dir_format) + f"/sm{get_sm_version(torch.cuda.current_device())}")
     inference.generate(inference_samples, output_dir=args.setup.output_dir)
 
 

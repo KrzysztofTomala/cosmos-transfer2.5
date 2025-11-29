@@ -498,6 +498,14 @@ class ControlVideo2WorldModel(Video2WorldModel):
         self.load_base_model()
         self.copy_weights_to_control_branch()
 
+    def load_trt_multicontrol(self, engine_dir_format):
+        # control_input_vis -> vis
+        control_keys = [s.split('_')[-1] for s in self.hint_keys]
+        if self.net.num_control_branches > 1:
+            for nc in range(self.net.num_control_branches):
+                log.info(f"Loading for nc={nc}: {engine_dir_format.format(control_keys[nc])}")
+                self.net.load_trt_for_control(engine_dir_format.format(control_keys[nc]), nc)
+
     def load_multi_branch_checkpoints(self, checkpoint_paths: list[str]):
         """
         Load control blocks from multiple checkpoint paths into control_blocks_0, control_blocks_1, etc.
