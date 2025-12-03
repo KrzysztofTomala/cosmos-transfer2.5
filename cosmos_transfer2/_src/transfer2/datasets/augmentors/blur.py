@@ -17,9 +17,10 @@ import random
 from typing import Callable, List, Optional
 
 import attrs
-import cv2
 import numpy as np
 import torch
+from scipy.ndimage import gaussian_filter
+from skimage.restoration import denoise_bilateral
 
 from cosmos_transfer2._src.transfer2.datasets.augmentors.fast_blur import BilateralGaussian
 
@@ -86,7 +87,17 @@ def apply_bilateral_filter(
 
     for _image_np in frames.transpose((1, 2, 3, 0)):
         for _ in range(iter):
-            _image_np = cv2.bilateralFilter(_image_np, d, sigma_color, sigma_space)
+            # Convert to float for skimage, apply bilateral filter, convert back
+            # skimage expects sigma values normalized differently than cv2
+            # sigma_color/255 approximates cv2's behavior, sigma_space is used directly
+            _image_float = _image_np.astype(np.float64) / 255.0
+            _image_float = denoise_bilateral(
+                _image_float, 
+                sigma_color=sigma_color / 255.0,
+                sigma_spatial=sigma_space / 10.0,  # Approximate scaling for similar effect
+                channel_axis=-1 if _image_float.ndim == 3 else None
+            )
+            _image_np = (np.clip(_image_float, 0, 1) * 255).astype(np.uint8)
         blurred_image += [_image_np]
 
     blurred_image = np.stack(blurred_image).transpose((3, 0, 1, 2))
@@ -119,9 +130,19 @@ class BilateralFilter:
 def apply_gaussian_blur(frames: np.ndarray, ksize: int = 5, sigmaX: float = 1.0) -> np.ndarray:
     if ksize % 2 == 0:
         ksize += 1  # ksize must be odd
-    blurred_image = [
-        cv2.GaussianBlur(_image_np, (ksize, ksize), sigmaX=sigmaX) for _image_np in frames.transpose((1, 2, 3, 0))
-    ]
+    # Using scipy.ndimage.gaussian_filter instead of cv2.GaussianBlur
+    # sigma parameter corresponds to sigmaX in cv2
+    blurred_image = []
+    for _image_np in frames.transpose((1, 2, 3, 0)):
+        # Apply gaussian filter to each channel separately if color image
+        if _image_np.ndim == 3:
+            blurred = np.stack([
+                gaussian_filter(_image_np[:, :, c], sigma=sigmaX) 
+                for c in range(_image_np.shape[2])
+            ], axis=-1)
+        else:
+            blurred = gaussian_filter(_image_np, sigma=sigmaX)
+        blurred_image.append(blurred.astype(_image_np.dtype))
     blurred_image = np.stack(blurred_image).transpose((3, 0, 1, 2))
     return blurred_image
 

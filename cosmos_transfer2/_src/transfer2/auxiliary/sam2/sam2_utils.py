@@ -16,11 +16,11 @@
 import os
 import time
 
-import cv2
 import imageio
 import numpy as np
 import pycocotools.mask
 import torch
+from decord import VideoReader, cpu
 from natsort import natsorted
 from PIL import Image
 from torchvision import transforms
@@ -57,14 +57,17 @@ def write_video(frames, output_path, fps=30):
 
 
 def capture_fps(input_video_path: str):
-    cap = cv2.VideoCapture(input_video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    """Get FPS from video file using decord."""
+    vr = VideoReader(input_video_path, ctx=cpu(0))
+    fps = vr.get_avg_fps()
+    del vr
     return fps
 
 
 def video_to_frames(input_loc, output_loc):
     """Function to extract frames from input video file
     and save them as separate frames in an output directory.
+    Uses decord for video reading and PIL for image saving.
     Args:
         input_loc: Input video file.
         output_loc: Output directory to save the frames.
@@ -77,32 +80,24 @@ def video_to_frames(input_loc, output_loc):
         pass
     # Log the time
     time_start = time.time()
-    # Start capturing the feed
-    cap = cv2.VideoCapture(input_loc)
-    # Find the number of frames
-    video_length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    # Load video using decord
+    vr = VideoReader(input_loc, ctx=cpu(0))
+    video_length = len(vr)
     print(f"Number of frames: {video_length}")
-    count = 0
     print("Converting video..\n")
-    # Start converting the video
-    while cap.isOpened():
-        # Extract the frame
-        ret, frame = cap.read()
-        if not ret:
-            continue
-        # Write the results back to output location.
-        cv2.imwrite(output_loc + "/%#05d.jpg" % (count + 1), frame)
-        count = count + 1
-        # If there are no more frames left
-        if count > (video_length - 1):
-            # Log the time again
-            time_end = time.time()
-            # Release the feed
-            cap.release()
+    # Extract and save all frames
+    for count in range(video_length):
+        # Get frame as numpy array (RGB format from decord)
+        frame = vr[count].asnumpy()
+        # Save frame using PIL (convert RGB to save as JPEG)
+        img = Image.fromarray(frame)
+        img.save(output_loc + "/%#05d.jpg" % (count + 1), quality=95)
+    # Log the time again
+    time_end = time.time()
+    del vr
             # Print stats
-            print("Done extracting frames.\n%d frames extracted" % count)
-            print("It took %d seconds forconversion." % (time_end - time_start))
-            break
+    print("Done extracting frames.\n%d frames extracted" % video_length)
+    print("It took %d seconds for conversion." % (time_end - time_start))
 
 
 # Function to generate video

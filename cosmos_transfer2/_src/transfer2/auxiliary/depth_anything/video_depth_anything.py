@@ -157,12 +157,14 @@ class VideoDepthAnythingModel:
 
         # Resize depth back to original dimensions if needed
         if depths.shape[1] != original_h or depths.shape[2] != original_w:
-            import cv2
+            from PIL import Image
 
             resized_depths = []
             for depth_frame in depths:
-                resized = cv2.resize(depth_frame, (original_w, original_h), interpolation=cv2.INTER_LINEAR)
-                resized_depths.append(resized)
+                # Convert to PIL, resize, convert back
+                pil_img = Image.fromarray(depth_frame)
+                pil_resized = pil_img.resize((original_w, original_h), resample=Image.Resampling.BILINEAR)
+                resized_depths.append(np.array(pil_resized))
             depths = np.stack(resized_depths)
 
         return depths
