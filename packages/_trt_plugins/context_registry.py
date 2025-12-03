@@ -13,7 +13,10 @@ log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
 
 try:
-    import sageattention
+    if torch.cuda.get_device_capability(0) == (9, 0):
+        import sageattention_sm90 as sageattention
+    else:
+        import sageattention
 except ImportError as e:
     log.error(f"Couldn't import SageAttention: {e}")
     sageattention = None
