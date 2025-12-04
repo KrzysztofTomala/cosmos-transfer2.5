@@ -20,7 +20,7 @@ import imageio
 import numpy as np
 import pycocotools.mask
 import torch
-from decord import VideoReader, cpu
+from imageio_ffmpeg import read_frames
 from natsort import natsorted
 from PIL import Image
 from torchvision import transforms
@@ -57,17 +57,18 @@ def write_video(frames, output_path, fps=30):
 
 
 def capture_fps(input_video_path: str):
-    """Get FPS from video file using decord."""
-    vr = VideoReader(input_video_path, ctx=cpu(0))
-    fps = vr.get_avg_fps()
-    del vr
+    """Get FPS from video file using imageio_ffmpeg."""
+    reader = read_frames(input_video_path)
+    meta = next(reader)  # Get metadata
+    fps = meta['fps']
+    reader.close()
     return fps
 
 
 def video_to_frames(input_loc, output_loc):
     """Function to extract frames from input video file
     and save them as separate frames in an output directory.
-    Uses decord for video reading and PIL for image saving.
+    Uses imageio_ffmpeg for video reading and PIL for image saving.
     Args:
         input_loc: Input video file.
         output_loc: Output directory to save the frames.
@@ -80,23 +81,26 @@ def video_to_frames(input_loc, output_loc):
         pass
     # Log the time
     time_start = time.time()
-    # Load video using decord
-    vr = VideoReader(input_loc, ctx=cpu(0))
-    video_length = len(vr)
-    print(f"Number of frames: {video_length}")
+    # Load video using imageio_ffmpeg
+    reader = read_frames(input_loc)
+    meta = next(reader)  # Get metadata
+    width, height = meta['size']
+    print(f"Video size: {width}x{height}")
     print("Converting video..\n")
     # Extract and save all frames
-    for count in range(video_length):
-        # Get frame as numpy array (RGB format from decord)
-        frame = vr[count].asnumpy()
-        # Save frame using PIL (convert RGB to save as JPEG)
+    count = 0
+    for frame_bytes in reader:
+        # Convert raw bytes to numpy array (RGB format)
+        frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((height, width, 3))
+        # Save frame using PIL
         img = Image.fromarray(frame)
         img.save(output_loc + "/%#05d.jpg" % (count + 1), quality=95)
+        count += 1
+    reader.close()
     # Log the time again
     time_end = time.time()
-    del vr
-            # Print stats
-    print("Done extracting frames.\n%d frames extracted" % video_length)
+    # Print stats
+    print("Done extracting frames.\n%d frames extracted" % count)
     print("It took %d seconds for conversion." % (time_end - time_start))
 
 
