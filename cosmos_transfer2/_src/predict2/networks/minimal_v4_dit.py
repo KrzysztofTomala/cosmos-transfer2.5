@@ -1847,14 +1847,13 @@ class MiniTrainDIT(WeightTrainingStat):
 
             return out_B_T_H_W_D
 
-    def load_trt(self, engine_dir):
+    def load_trt(self, block_file_map: dict[str, str]):
         # Load TRT for base blocks
-        self.trt_engine_dir = engine_dir
         for iblock in range(len(self.blocks)):
             self.blocks[iblock] = None
             gc.collect()
             torch.cuda.empty_cache()
-            trt_engine_file = os.path.join(engine_dir, f"cosmos_transfer2.5_net_block{iblock}.trt")
+            trt_engine_file = block_file_map[f"cosmos_transfer2.5_net_block{iblock}"]
             self.blocks[iblock] = MiniTrainDIT.TensorRTBlock(trt_engine_file)
 
     def forward(

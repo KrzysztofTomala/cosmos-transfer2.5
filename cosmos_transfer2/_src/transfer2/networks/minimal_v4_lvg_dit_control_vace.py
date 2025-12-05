@@ -960,7 +960,7 @@ class MinimalV4LVGControlVaceDiT(MiniTrainDITImageContext):
 
             return out_B_T_H_W_D
 
-    def load_trt(self, block_file_map):
+    def load_trt(self, block_file_map: dict[str, str]):
         def _init(blocks, block_index, block_id, block_label, trt_class):
             blocks[block_index] = None
             gc.collect()
