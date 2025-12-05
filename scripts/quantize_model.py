@@ -20,7 +20,7 @@ import random
 import sys
 import time
 from dataclasses import dataclass
-from typing import Sequence, Self
+from typing import Sequence
 
 import modelopt.torch.quantization as mtq
 import modelopt.torch.opt as mto
@@ -47,7 +47,7 @@ class CalibrationSample:
         return ",".join([str(self.control_weights[k]) for k in self.control_keys])
 
     @classmethod
-    def from_json(cls, data: dict, modality: list[str]) -> Self:
+    def from_json(cls, data: dict, modality: list[str]):
         # Parse prompt
         if data.get("prompt"):
             prompt = data["prompt"]

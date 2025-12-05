@@ -960,16 +960,33 @@ class MinimalV4LVGControlVaceDiT(MiniTrainDITImageContext):
 
             return out_B_T_H_W_D
 
-    def load_trt(self, engine_dir):
-        def _init(blocks, block_index, block_id, engine_label, trt_class):
+    def load_trt(self, block_file_map):
+        def _init(blocks, block_index, block_id, block_label, trt_class):
             blocks[block_index] = None
             gc.collect()
             torch.cuda.empty_cache()
-            trt_engine_file = os.path.join(engine_dir, engine_label)
+            trt_engine_file = block_file_map[block_label]
             blocks[block_index] = trt_class(trt_engine_file, block_id)
 
-        self.trt_engine_dir = engine_dir
-        if self.num_control_branches > 1:
+        # Base blocks
+        for iblock in range(len(self.blocks)):
+            _init(
+                self.blocks,
+                iblock,
+                self.blocks[iblock].block_id,
+                f"cosmos_transfer2.5_net_block{iblock}",
+                MinimalV4LVGControlVaceDiT.ControlReceivingTensorRTBlock)
+
+        if self.num_control_branches == 1:
+            # Single-control blocks
+            for iblock in range(len(self.control_blocks)):
+                _init(
+                    self.control_blocks,
+                    iblock,
+                    iblock,
+                    f"cosmos_transfer2.5_controlnet_branch0_block{iblock}",
+                    MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock)
+        else:
             # Multi-control blocks
             for nc in range(self.num_control_branches):
                 control_blocks = getattr(self, f"control_blocks_{nc}")
@@ -980,23 +997,6 @@ class MinimalV4LVGControlVaceDiT(MiniTrainDITImageContext):
                         iblock,
                         f"cosmos_transfer2.5_controlnet_branch{nc}_block{iblock}.trt",
                         MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock)
-        else:
-            # Single-control blocks
-            for iblock in range(len(self.control_blocks)):
-                _init(
-                    self.control_blocks,
-                    iblock,
-                    iblock,
-                    f"cosmos_transfer2.5_controlnet_block{iblock}.trt",
-                    MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock)
-        # Base blocks
-        for iblock in range(len(self.blocks)):
-            _init(
-                self.blocks,
-                iblock,
-                self.blocks[iblock].block_id,
-                f"cosmos_transfer2.5_net_block{iblock}.trt",
-                MinimalV4LVGControlVaceDiT.ControlReceivingTensorRTBlock)
 
     def forward(
         self,

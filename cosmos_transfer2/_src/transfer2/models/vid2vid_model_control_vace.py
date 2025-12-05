@@ -498,6 +498,41 @@ class ControlVideo2WorldModel(Video2WorldModel):
         self.load_base_model()
         self.copy_weights_to_control_branch()
 
+    def load_trt(self, engine_dir, control_engine_dir_format):
+        tokens = os.path.basename(engine_dir).split("_")
+        assert len(tokens) == 4, \
+            f"Expected {engine_dir=} to point to a folder with format `trt_<control1[-controlN]>_<size>B_<precision>`."
+        available_controls = tokens[1].split("-")
+
+        # Map that resolves the location of TRT engine files associated with each block
+        block_file_map: dict[str, str] = {}
+
+        for iblock in range(self.net.num_blocks):
+            block_label = f"cosmos_transfer2.5_net_block{iblock}"
+            block_file_map[block_label] = os.path.join(engine_dir, f"{block_label}.trt")
+
+        control_keys = [s.split('_')[-1] for s in self.hint_keys]  # control_input_vis -> vis
+        for nc, control_key in zip(range(self.net.num_control_branches), control_keys):
+            if self.net.num_control_branches == 1:
+                # Single-control
+                engine_name = "cosmos_transfer2.5_controlnet_block{iblock}.trt"
+                engine_path = os.path.join(engine_dir, engine_name)
+            elif control_key in available_controls:
+                # Multi-control
+                source_branch_index = available_controls.index(control_key)
+                engine_name = f"cosmos_transfer2.5_controlnet_branch{source_branch_index}" + "_block{iblock}.trt"
+                engine_path = os.path.join(engine_dir, engine_name)
+            else:
+                # Multi-control composite of independent controls
+                engine_name = "cosmos_transfer2.5_controlnet_block{iblock}.trt"
+                engine_path = os.path.join(control_engine_dir_format.format(control_key), engine_name)
+
+            for iblock in range(len(self.net.control_layers)):
+                block_label = f"cosmos_transfer2.5_controlnet_branch{nc}_block{iblock}"
+                block_file_map[block_label] = engine_path.format(iblock=iblock)
+
+        self.net.load_trt(block_file_map)
+
     def load_multi_branch_checkpoints(self, checkpoint_paths: list[str]):
         """
         Load control blocks from multiple checkpoint paths into control_blocks_0, control_blocks_1, etc.

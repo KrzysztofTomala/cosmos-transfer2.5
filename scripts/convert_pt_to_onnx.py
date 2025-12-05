@@ -39,6 +39,7 @@ def make_parser():
                              "Provide single variant (e.g., edge) for single control, "
                              "or multiple variants (e.g., edge vis depth seg) for multicontrol mode.")
     parser.add_argument("--modelopt_checkpoint", type=str, required=True, help="Path to ModelOPT-quantized checkpoint.")
+    parser.add_argument("--controls_only", action="store_true", help="Export control layers only (skip base layers).")
     parser.add_argument("--output_dir", type=str, default="output", help="Folder to export ONNX files to.")
     parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
                         help="Quantization mode (FP8 or NVFP4)")
@@ -61,12 +62,6 @@ def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmd
     onnx_dir = os.path.join(cmdargs.output_dir, f"onnx_{model.safe_name}_2B_{cmdargs.mode}")
     os.makedirs(onnx_dir, exist_ok=True)
 
-    # Export regular DiT blocks
-    for bidx in tqdm.trange(dims.BK, disable=False, desc="Exporting base block to ONNX"):
-        block_meta = BlockMeta(bidx, is_control=False, receives_control=bidx in dit_controlnet.control_layers)
-        inputs = {key: dummy_tensors[key] for key in block_meta.fixed_inputs}
-        export_block_as_onnx(onnx_dir, inputs, block_meta, dit_controlnet.blocks[bidx])
-
     # Export control DiT blocks
     if model.is_multicontrol:
         for control_branch in range(len(model.variants)):
@@ -83,6 +78,15 @@ def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmd
             block_meta = BlockMeta(bidx, is_control=True, receives_control=False)
             inputs = {"c": c, **{key: dummy_tensors[key] for key in block_meta.fixed_inputs}}
             c = export_block_as_onnx(onnx_dir, inputs, block_meta, dit_controlnet.control_blocks[bidx])
+
+    if cmdargs.controls_only:
+        return onnx_dir
+
+    # Export regular DiT blocks
+    for bidx in tqdm.trange(dims.BK, disable=False, desc="Exporting base block to ONNX"):
+        block_meta = BlockMeta(bidx, is_control=False, receives_control=bidx in dit_controlnet.control_layers)
+        inputs = {key: dummy_tensors[key] for key in block_meta.fixed_inputs}
+        export_block_as_onnx(onnx_dir, inputs, block_meta, dit_controlnet.blocks[bidx])
 
     return onnx_dir
 
