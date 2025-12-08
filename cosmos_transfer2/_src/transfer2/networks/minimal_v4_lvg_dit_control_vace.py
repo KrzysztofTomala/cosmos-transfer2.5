@@ -990,12 +990,12 @@ class MinimalV4LVGControlVaceDiT(MiniTrainDITImageContext):
             # Multi-control blocks
             for nc in range(self.num_control_branches):
                 control_blocks = getattr(self, f"control_blocks_{nc}")
-                for iblock in range(len(self.control_blocks)):
+                for iblock in range(len(control_blocks)):
                     _init(
                         control_blocks,
                         iblock,
                         iblock,
-                        f"cosmos_transfer2.5_controlnet_branch{nc}_block{iblock}.trt",
+                        f"cosmos_transfer2.5_controlnet_branch{nc}_block{iblock}",
                         MinimalV4LVGControlVaceDiT.ControlProducingTensorRTBlock)
 
     def forward(

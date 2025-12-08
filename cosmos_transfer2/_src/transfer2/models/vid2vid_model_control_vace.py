@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+import re
 from typing import Callable, Dict, Tuple
 
 import attrs
@@ -38,6 +39,8 @@ from cosmos_transfer2._src.predict2.models.video2world_model import (
 )
 from cosmos_transfer2._src.transfer2.configs.vid2vid_transfer.defaults.conditioner import ControlVideo2WorldCondition
 from cosmos_transfer2._src.transfer2.datasets.augmentors.control_input import CTRL_HINT_KEYS
+
+RE_ENGINE_DIR = re.compile(r".*trt_(?P<controls>[a-z-]+(_[a-z-]+)*)_\d{1,2}B_[A-Z0-9]+(/.*)?")
 
 IS_PREPROCESSED_KEY = "is_preprocessed"
 
@@ -499,10 +502,10 @@ class ControlVideo2WorldModel(Video2WorldModel):
         self.copy_weights_to_control_branch()
 
     def load_trt(self, engine_dir, control_engine_dir_format):
-        tokens = os.path.basename(engine_dir).split("_")
-        assert len(tokens) == 4, \
-            f"Expected {engine_dir=} to point to a folder with format `trt_<control1[-controlN]>_<size>B_<precision>`."
-        available_controls = tokens[1].split("-")
+        if (m := RE_ENGINE_DIR.match(engine_dir)) is None:
+            raise RuntimeError(
+                f"Expected {engine_dir=} to point to a folder with format `[.../]trt_<control1[_controlN]>_<size>B_<precision>[/...]`.")
+        available_controls = m.group("controls").split("_")
 
         # Map that resolves the location of TRT engine files associated with each block
         block_file_map: dict[str, str] = {}
