@@ -59,9 +59,16 @@ _INTERP_TO_PIL = {
 def _resize_frame(frame: np.ndarray, width: int, height: int, interpolation: int = INTER_AREA) -> np.ndarray:
     """Resize a single frame using PIL (cv2.resize replacement)."""
     pil_resample = _INTERP_TO_PIL.get(interpolation, _PIL_BILINEAR)
+    is_single_channel = frame.ndim == 3 and frame.shape[-1] == 1
+    # If the frame is depth image, we need to squeeze, because PIL can't handle three dimensional float arrays
+    if is_single_channel:
+        frame = frame.squeeze(axis=-1)
     img = Image.fromarray(frame)
     img_resized = img.resize((width, height), resample=pil_resample)
-    return np.array(img_resized)
+    frame_resized = np.array(img_resized)
+    if is_single_channel and frame_resized.ndim == 2:
+        frame_resized = np.expand_dims(frame_resized, axis=-1)
+    return frame_resized
 
 from cosmos_transfer2._src.imaginaire.utils import distributed, log
 from cosmos_transfer2._src.imaginaire.utils.easy_io import easy_io
@@ -202,7 +209,8 @@ def resize_video(video_np: np.ndarray, h: int, w: int, interpolation: int = INTE
     """Resize video frames to the specified height and width."""
     video_np = video_np[0].transpose((1, 2, 3, 0))  # Convert to T x H x W x C
     t = video_np.shape[0]
-    resized_video = np.zeros((t, h, w, 3), dtype=np.uint8)
+    c = video_np.shape[3]
+    resized_video = np.zeros((t, h, w, c), dtype=np.uint8)
     for i in range(t):
         resized_video[i] = _resize_frame(video_np[i], w, h, interpolation=interpolation)
     return resized_video.transpose((3, 0, 1, 2))[None]  # Convert back to B x C x T x H x W
@@ -735,12 +743,12 @@ def read_and_process_control_input(
 
                 depth_computed = _compute_depth_maps(video_np)
                 if depth_computed is not None:
-                    depth_rgb = depth_computed.expand(3, -1, -1, -1)  # (3, T, H, W)
-                    control_input_dict[control_key] = _resize_to_target_resolution(
-                        depth_rgb,
+                    depth_computed = _resize_to_target_resolution(
+                        depth_computed,
                         resolution=resolution,
                         interpolation=config["interpolation"],
                     )
+                    control_input_dict[control_key] = depth_computed.expand(3, -1, -1, -1)
                 else:
                     control_input_dict[control_key] = None
 
