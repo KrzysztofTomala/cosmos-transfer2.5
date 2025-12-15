@@ -244,7 +244,7 @@ def read_video_or_image_into_frames_BCTHW(
         else None
     )
     loaded_data = easy_io.load(input_path, file_format=input_path_format, backend_args=backend_args, plugin='FFMPEG',
-        extension=input_path.split('.')[-1])
+        extension='.' + input_path.split('.')[-1])
     if input_path.endswith(".png") or input_path.endswith(".jpg") or input_path.endswith(".jpeg"):
         frames = np.array(loaded_data)  # HWC, [0,255]
         if frames.shape[-1] > 3:  # RGBA, set the transparent to white
