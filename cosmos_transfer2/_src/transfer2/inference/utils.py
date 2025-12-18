@@ -21,11 +21,54 @@ import tempfile
 import time
 from typing import Any, Optional
 
-import cv2
 import einops
 import mediapy as media
 import numpy as np
 import torch
+from PIL import Image
+
+# OpenCV interpolation constants (replacing cv2 dependency)
+INTER_NEAREST = 0
+INTER_LINEAR = 1
+INTER_AREA = 3
+INTER_LANCZOS4 = 4
+
+# PIL Resampling modes - handle both old and new Pillow versions
+try:
+    # Pillow 10.0+ uses Image.Resampling enum
+    _PIL_NEAREST = Image.Resampling.NEAREST
+    _PIL_BILINEAR = Image.Resampling.BILINEAR
+    _PIL_BOX = Image.Resampling.BOX
+    _PIL_LANCZOS = Image.Resampling.LANCZOS
+except AttributeError:
+    # Older Pillow versions use direct constants
+    _PIL_NEAREST = Image.NEAREST
+    _PIL_BILINEAR = Image.BILINEAR
+    _PIL_BOX = Image.BOX
+    _PIL_LANCZOS = Image.LANCZOS
+
+# Mapping from cv2-style interpolation to PIL resample modes
+_INTERP_TO_PIL = {
+    INTER_NEAREST: _PIL_NEAREST,
+    INTER_LINEAR: _PIL_BILINEAR,
+    INTER_AREA: _PIL_BOX,  # Closest to cv2.INTER_AREA for downscaling
+    INTER_LANCZOS4: _PIL_LANCZOS,
+}
+
+
+def _resize_frame(frame: np.ndarray, width: int, height: int, interpolation: int = INTER_AREA) -> np.ndarray:
+    """Resize a single frame using PIL (cv2.resize replacement)."""
+    pil_resample = _INTERP_TO_PIL.get(interpolation, _PIL_BILINEAR)
+    is_single_channel = frame.ndim == 3 and frame.shape[-1] == 1
+    # If the frame is depth image, we need to squeeze, because PIL can't handle three dimensional float arrays
+    if is_single_channel:
+        frame = frame.squeeze(axis=-1)
+    img = Image.fromarray(frame)
+    img_resized = img.resize((width, height), resample=pil_resample)
+    frame_resized = np.array(img_resized)
+    if is_single_channel and frame_resized.ndim == 2:
+        frame_resized = np.expand_dims(frame_resized, axis=-1)
+    return frame_resized
 
 from cosmos_transfer2._src.imaginaire.utils import distributed, log
 from cosmos_transfer2._src.imaginaire.utils.easy_io import easy_io
@@ -162,13 +205,14 @@ def load_from_s3_with_cache(
     return easy_io.load(cache_fp, **easy_io_kwargs)
 
 
-def resize_video(video_np: np.ndarray, h: int, w: int, interpolation: int = cv2.INTER_AREA) -> np.ndarray:
+def resize_video(video_np: np.ndarray, h: int, w: int, interpolation: int = INTER_AREA) -> np.ndarray:
     """Resize video frames to the specified height and width."""
     video_np = video_np[0].transpose((1, 2, 3, 0))  # Convert to T x H x W x C
     t = video_np.shape[0]
-    resized_video = np.zeros((t, h, w, 3), dtype=np.uint8)
+    c = video_np.shape[3]
+    resized_video = np.zeros((t, h, w, c), dtype=np.uint8)
     for i in range(t):
-        resized_video[i] = cv2.resize(video_np[i], (w, h), interpolation=interpolation)
+        resized_video[i] = _resize_frame(video_np[i], w, h, interpolation=interpolation)
     return resized_video.transpose((3, 0, 1, 2))[None]  # Convert back to B x C x T x H x W
 
 
@@ -207,7 +251,8 @@ def read_video_or_image_into_frames_BCTHW(
         if input_path.startswith("s3://")
         else None
     )
-    loaded_data = easy_io.load(input_path, file_format=input_path_format, backend_args=backend_args)
+    loaded_data = easy_io.load(input_path, file_format=input_path_format, backend_args=backend_args, plugin='FFMPEG',
+        extension='.' + input_path.split('.')[-1])
     if input_path.endswith(".png") or input_path.endswith(".jpg") or input_path.endswith(".jpeg"):
         frames = np.array(loaded_data)  # HWC, [0,255]
         if frames.shape[-1] > 3:  # RGBA, set the transparent to white
@@ -249,7 +294,7 @@ def read_video_or_image_into_frames_BCTHW(
 def _resize_to_target_resolution(
     video_tensor: torch.Tensor | np.ndarray,
     resolution: str = "720",
-    interpolation: int = cv2.INTER_AREA,
+    interpolation: int = INTER_AREA,
 ) -> torch.Tensor:
     """
     Resize video tensor to target resolution based on aspect ratio.
@@ -282,7 +327,7 @@ def _resize_to_target_resolution(
 def read_and_resize_input(
     input_video_path: str,
     num_total_frames: int = NUM_MAX_FRAMES,
-    interpolation: int = cv2.INTER_AREA,
+    interpolation: int = INTER_AREA,
     resolution: str = "720",
     s3_credential_path: str | None = None,
 ) -> tuple[torch.Tensor, int, str, tuple[int, int]]:
@@ -377,7 +422,7 @@ def read_and_process_video(
     input_frames, fps, aspect_ratio, (H, W) = read_and_resize_input(
         video_path,
         num_total_frames=num_total_frames,
-        interpolation=cv2.INTER_AREA,
+        interpolation=INTER_AREA,
         resolution=resolution,
         s3_credential_path=s3_credential_path,
     )
@@ -619,23 +664,23 @@ def read_and_process_control_input(
     # Configuration for each modality
     modality_config = {
         "edge": {
-            "interpolation": cv2.INTER_LINEAR,
+            "interpolation": INTER_LINEAR,
             "fallback_msg": "No edge control input file found, will compute online..",
         },
         "vis": {
-            "interpolation": cv2.INTER_AREA,
+            "interpolation": INTER_AREA,
             "fallback_msg": "No vis (blur) control input file found, will compute online..",
         },
         "depth": {
-            "interpolation": cv2.INTER_LINEAR,
+            "interpolation": INTER_LINEAR,
             "fallback_msg": "No depth control input file found, computing now using Video Depth Anything..",
         },
         "seg": {
-            "interpolation": cv2.INTER_NEAREST,
+            "interpolation": INTER_NEAREST,
             "fallback_msg": "No segmentation control input file found, computing now using SAM2..",
         },
         "inpaint": {
-            "interpolation": cv2.INTER_LINEAR,
+            "interpolation": INTER_LINEAR,
             "fallback_msg": None,
         },
         "hdmap_bbox": {
@@ -698,12 +743,12 @@ def read_and_process_control_input(
 
                 depth_computed = _compute_depth_maps(video_np)
                 if depth_computed is not None:
-                    depth_rgb = depth_computed.expand(3, -1, -1, -1)  # (3, T, H, W)
-                    control_input_dict[control_key] = _resize_to_target_resolution(
-                        depth_rgb,
+                    depth_computed = _resize_to_target_resolution(
+                        depth_computed,
                         resolution=resolution,
                         interpolation=config["interpolation"],
                     )
+                    control_input_dict[control_key] = depth_computed.expand(3, -1, -1, -1)
                 else:
                     control_input_dict[control_key] = None
 
@@ -712,7 +757,7 @@ def read_and_process_control_input(
             control_mask_attr, fps, _, _ = read_and_resize_input(
                 control_mask_path,
                 resolution=resolution,
-                interpolation=cv2.INTER_LINEAR,
+                interpolation=INTER_LINEAR,
                 s3_credential_path=s3_credential_path,
             )
             control_input_dict[f"{control_key}_mask"] = (control_mask_attr[:1] > 127.5).to(torch.bool)
@@ -764,7 +809,7 @@ def reshape_output_video_to_input_resolution(
                     normalized_float_to_uint8(video_part).cpu().numpy(),
                     h_out,
                     w_out,
-                    interpolation=cv2.INTER_LANCZOS4,
+                    interpolation=INTER_LANCZOS4,
                 )
             ).to(device=full_video.device),
             dtype=full_video.dtype,

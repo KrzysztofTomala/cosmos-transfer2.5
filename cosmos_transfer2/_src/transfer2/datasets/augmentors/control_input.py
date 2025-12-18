@@ -16,11 +16,50 @@
 import random
 from typing import Optional, Union
 
-import cv2
 import numpy as np
 import torch
 import torchvision.transforms.functional as transforms_F
+from PIL import Image
 from pycocotools import mask as mask_utils
+from skimage.feature import canny as skimage_canny
+
+# Import shared resize utilities from inference utils (avoid code duplication)
+from cosmos_transfer2._src.transfer2.inference.utils import (
+    INTER_NEAREST,
+    INTER_LINEAR,
+    INTER_AREA,
+    _resize_frame,
+)
+
+
+def _canny_edge(image: np.ndarray, low_threshold: int, high_threshold: int) -> np.ndarray:
+    """Compute Canny edge detection using skimage (cv2.Canny replacement).
+    
+    Args:
+        image: Input grayscale or color image (H, W) or (H, W, C)
+        low_threshold: Lower threshold for edge detection (0-255 scale, will be normalized)
+        high_threshold: Upper threshold for edge detection (0-255 scale, will be normalized)
+    
+    Returns:
+        Edge map as uint8 array (0 or 255)
+    """
+    # Convert to grayscale if needed
+    if image.ndim == 3:
+        # RGB to grayscale
+        gray = np.dot(image[..., :3], [0.299, 0.587, 0.114]).astype(np.float64)
+    else:
+        gray = image.astype(np.float64)
+    
+    # Normalize thresholds from 0-255 to 0-1 range for skimage
+    # skimage canny uses sigma for gaussian smoothing and thresholds are relative to gradient magnitude
+    low_thresh = low_threshold / 255.0
+    high_thresh = high_threshold / 255.0
+    
+    # Apply canny edge detection
+    edges = skimage_canny(gray / 255.0, sigma=1.0, low_threshold=low_thresh, high_threshold=high_thresh)
+    
+    # Convert boolean to uint8 (0 or 255)
+    return (edges * 255).astype(np.uint8)
 
 from cosmos_transfer2._src.imaginaire.datasets.webdataset.augmentors.augmentor import Augmentor
 from cosmos_transfer2._src.imaginaire.utils import log
@@ -117,9 +156,9 @@ class AddControlInputEdge(Augmentor):
 
         # Compute the canny edge map by the two thresholds.
         if is_image:
-            edge_maps = cv2.Canny(frames, t_lower, t_upper)[None, None]
+            edge_maps = _canny_edge(frames, t_lower, t_upper)[None, None]
         else:
-            edge_maps = [cv2.Canny(img, t_lower, t_upper) for img in frames.transpose((1, 2, 3, 0))]
+            edge_maps = [_canny_edge(img, t_lower, t_upper) for img in frames.transpose((1, 2, 3, 0))]
             edge_maps = np.stack(edge_maps)[None]
         edge_maps = torch.from_numpy(edge_maps).expand(3, -1, -1, -1)
         if is_image:
@@ -210,7 +249,7 @@ class AddControlInputBlur(Augmentor):
             downscale_factor = self.blur_downup_preset
         if self.downsize_before_blur:
             frames = [
-                cv2.resize(_image_np, (W // downscale_factor, H // downscale_factor), interpolation=cv2.INTER_AREA)
+                _resize_frame(_image_np, W // downscale_factor, H // downscale_factor, interpolation=INTER_AREA)
                 for _image_np in frames.transpose((1, 2, 3, 0))
             ]
             frames = np.stack(frames).transpose((3, 0, 1, 2))
@@ -219,7 +258,7 @@ class AddControlInputBlur(Augmentor):
 
         if self.downsize_before_blur:
             frames = [
-                cv2.resize(_image_np, (W, H), interpolation=cv2.INTER_LINEAR)
+                _resize_frame(_image_np, W, H, interpolation=INTER_LINEAR)
                 for _image_np in frames.transpose((1, 2, 3, 0))
             ]
             frames = np.stack(frames).transpose((3, 0, 1, 2))
@@ -420,7 +459,7 @@ class AddControlInputSeg(Augmentor):
                     partial_shape = (frame_end - frame_start, shape[1], shape[2])
                     rle = rle.reshape(partial_shape) * 255
                     rle = np.stack(
-                        [cv2.resize(_image_np, (W, H), interpolation=cv2.INTER_NEAREST) for _image_np in rle]
+                        [_resize_frame(_image_np, W, H, interpolation=INTER_NEAREST) for _image_np in rle]
                     )
                 else:  # need to call decode_partial_rle_width1 multiple times
                     # It takes too much time to decode the mask, so we skip it and select another modality instead
@@ -432,7 +471,7 @@ class AddControlInputSeg(Augmentor):
                 # Select the frames that are in the video
                 if len(rle) < frame_end:  # Pad the mask if it is shorter than original video
                     rle = np.vstack([rle, [rle[-1]] * (frame_end - len(rle))])
-                rle = np.stack([cv2.resize(rle[i], (W, H), interpolation=cv2.INTER_NEAREST) for i in frame_indices])
+                rle = np.stack([_resize_frame(rle[i], W, H, interpolation=INTER_NEAREST) for i in frame_indices])
             if num_masks == 1:  # if we only need one mask and the current mask is large enough, return it
                 if (rle > 0).sum() / rle.size >= self.min_mask_size:
                     # log.critical(f"Found a large enough mask with size {(rle > 0).sum() / rle.size}")
