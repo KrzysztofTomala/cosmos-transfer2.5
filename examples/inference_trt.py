@@ -67,6 +67,9 @@ class Args(pydantic.BaseModel):
     control: ControlUnion = EdgeConfig()
     """Control help. Run control:edge --help for more information about edge etc."""
 
+    force_multi_control: bool = False
+    """Load full multi-control model, let control branches be activated dynamically on a per-sample basis"""
+
 
 def main(
     args: Args,
@@ -77,6 +80,10 @@ def main(
     init_output_dir(args.setup.output_dir, profile=args.setup.profile)
 
     from cosmos_transfer2.inference import Control2WorldInference
+    if args.force_multi_control:
+        # Load full multicontrol model, route modalities according to each sample
+        from cosmos_transfer2.config import CONTROL_KEYS
+        batch_hint_keys = CONTROL_KEYS.copy()
 
     inference = Control2WorldInference(args.setup, batch_hint_keys=batch_hint_keys)
     sm_arch = f"sm{get_sm_version(torch.cuda.current_device())}"
