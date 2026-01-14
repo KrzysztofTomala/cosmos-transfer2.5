@@ -23,11 +23,7 @@ import nltk
 from better_profanity import profanity
 
 from cosmos_transfer2._src.imaginaire.auxiliary.guardrail.blocklist.utils import read_keyword_list_from_dir, to_ascii
-from cosmos_transfer2._src.imaginaire.auxiliary.guardrail.common.core import (
-    GUARDRAIL1_CHECKPOINT_DIR,
-    ContentSafetyGuardrail,
-    GuardrailRunner,
-)
+from cosmos_transfer2._src.imaginaire.auxiliary.guardrail.common.core import ContentSafetyGuardrail, GuardrailRunner, _get_guardrail1_checkpoint_dir_lazy
 from cosmos_transfer2._src.imaginaire.utils import log, misc
 
 CENSOR = misc.Color.red("*")
@@ -36,6 +32,7 @@ CENSOR = misc.Color.red("*")
 class Blocklist(ContentSafetyGuardrail):
     def __init__(
         self,
+        checkpoint_dir: str | None = None,
         guardrail_partial_match_min_chars: int = 6,
         guardrail_partial_match_letter_count: float = 0.4,
     ) -> None:
@@ -46,7 +43,12 @@ class Blocklist(ContentSafetyGuardrail):
             guardrail_partial_match_min_chars (int, optional): Minimum number of characters in a word to check for partial match. Defaults to 6.
             guardrail_partial_match_letter_count (float, optional): Maximum allowed difference in characters for partial match. Defaults to 0.4.
         """
-        self.checkpoint_dir = os.path.join(GUARDRAIL1_CHECKPOINT_DIR, "blocklist")
+        if checkpoint_dir is None:
+            # Fallback to old behavior using checkpoint_db (lazy-loaded to avoid HF download at import time)
+            self.checkpoint_dir = os.path.join(_get_guardrail1_checkpoint_dir_lazy(), "blocklist")
+        else:
+            # Use NGC manifest downloaded checkpoints
+            self.checkpoint_dir = os.path.join(checkpoint_dir, "nvidia/Cosmos-Guardrail1/blocklist")
         nltk.data.path.append(os.path.join(self.checkpoint_dir, "nltk_data"))
         self.lemmatizer = nltk.WordNetLemmatizer()
         self.profanity = profanity
@@ -113,25 +115,10 @@ class Blocklist(ContentSafetyGuardrail):
             len(normalized_word)
         )
 
-        seq_matcher = SequenceMatcher(None)
-        seq_matcher.set_seq2(normalized_word)
-
         for i in range(len(prompt_words) - word_length + 1):
             # Extract a substring from the prompt with the same number of words as the normalized_word
             substring = " ".join(prompt_words[i : i + word_length])
-            seq_matcher.set_seq1(substring)
-
-            # real_quick_ratio and quick_ratio are faster than ratio and both serve as upper bound for similarity ratio.
-            # If they are less than max_similarity_ratio, it means that also the ratio will be less than max_similarity_ratio and we can skip the expensive ratio computation.
-            # This saves a lot of time because in practice the tested words are usually dissimilar.
-            # For details see: https://docs.python.org/3/library/difflib.html#difflib.SequenceMatcher
-            if (
-                seq_matcher.real_quick_ratio() < max_similarity_ratio
-                or seq_matcher.quick_ratio() < max_similarity_ratio
-            ):
-                continue
-
-            similarity_ratio = seq_matcher.ratio()
+            similarity_ratio = SequenceMatcher(None, substring, normalized_word).ratio()
             if similarity_ratio >= max_similarity_ratio:
                 return (
                     True,
@@ -146,7 +133,7 @@ class Blocklist(ContentSafetyGuardrail):
         blocklist: list[str],
         guardrail_partial_match_min_chars: int = 6,
         guardrail_partial_match_letter_count: float = 0.4,
-    ) -> tuple[bool, str]:
+    ) -> bool:
         """
         Check if the prompt contains any whole words from the blocklist.
         The match is case insensitive and robust to multiple spaces between words.
@@ -158,32 +145,20 @@ class Blocklist(ContentSafetyGuardrail):
             guardrail_partial_match_letter_count: maximum allowed difference in characters for partial match
 
         Returns:
-            tuple[bool, str]: (True if a match is found, False otherwise), message indicating why the prompt was blocked
+            bool: True if a match is found, False otherwise
+            str: A message indicating why the prompt was blocked
         """
         # Normalize spaces and convert to lowercase
         normalized_prompt = re.sub(r"\s+", " ", prompt).strip().lower()
-
-        normalized_words_cache = set()
 
         for word in blocklist:
             # Normalize spaces and convert to lowercase for each blocklist word
             normalized_word = re.sub(r"\s+", " ", word).strip().lower()
 
-            if normalized_word in normalized_words_cache:
-                continue
-
-            normalized_words_cache.add(normalized_word)
-
             # Use word boundaries to ensure whole word match
             if re.search(r"\b" + re.escape(normalized_word) + r"\b", normalized_prompt):
                 return True, f"Prompt blocked by exact match blocklist: Prompt: {prompt}, Exact Match Word: {word}"
 
-        # Roughly 3/4 of the time this function requires is spent on partial matching.
-        # We could use just one for loop to check both exact and partial matches but doing it in two loops is faster in practice
-        # because it delays the partial matching as long as possible with a chance of early exit due to exact match.
-        # Above we cache the normalized words and here we reuse them in the second loop for partial matching.
-
-        for normalized_word in normalized_words_cache:
             # Check for partial match if the word is long enough
             if len(normalized_word) >= guardrail_partial_match_min_chars:
                 match, message = Blocklist.check_partial_match(
