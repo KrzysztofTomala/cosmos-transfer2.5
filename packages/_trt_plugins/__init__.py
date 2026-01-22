@@ -60,7 +60,7 @@ def trt_set_tensor_check(context, name, tensor, check_shape=True):
     assert tensor.is_contiguous(), f"contiguous tensor expected: {name}"
     assert trt_get_tensor_dtype(context, name) == tensor.dtype, f"incompatible dtype for tensor {name}: {tensor.dtype}"
     if check_shape:
-        assert context.set_input_shape(name, tensor.shape), f"incompatible shape for tensor {name}: {tensor.shape}"
+        assert context.set_input_shape(name, tensor.shape), f"incompatible shape for tensor {name}: {tensor.shape}, expected: {context.engine.get_tensor_shape(name)}. min,opt,max: {context.engine.get_tensor_profile_shape(name,0)}"
     context.set_tensor_address(name, tensor.data_ptr())
 
 def trt_get_tensor_dtype(context, name):
