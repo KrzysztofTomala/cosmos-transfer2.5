@@ -15,12 +15,18 @@
 
 from pathlib import Path
 from typing import Annotated, Union
+import torch
+import os
+
+# Halfway: Needs to ensure CUDA context is correctly set for each GPU by each proc before importing any TRT modules
+local_rank = int(os.environ.get("LOCAL_RANK", 0))
+torch.cuda.set_device(local_rank)
 
 import pydantic
 import tyro
 from cosmos_oss.init import cleanup_environment, init_environment, init_output_dir
 from packages._trt_plugins.context_registry import get_sm_version
-import torch
+
 
 from cosmos_transfer2.config import (
     BlurConfig,

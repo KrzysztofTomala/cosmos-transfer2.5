@@ -133,18 +133,20 @@ class BlockMeta:
     @property
     def dynamic_axes(self):
         dynamic_axes = {
-            'x_B_T_H_W_D': {2: 'H', 3: 'W'},
-            'rope_emb_T_H_W_1_1_D': {1: 'H', 2: 'W'},
+            'x_B_T_H_W_D': {1: 'T', 2: 'H', 3: 'W'},
+            'emb_B_T_D': {1: 'T'},
+            'rope_emb_T_H_W_1_1_D': {0: 'T', 1: 'H', 2: 'W'},
+            'adaln_lora_B_T_3D': {1: 'T'},
         }
         if self.is_control:
-            dynamic_axes["output"] = {3: 'H', 4: 'W'}  # Control blocks stack outputs of shape [bidx+2, B, T, H, W, D]
+            dynamic_axes["output"] = {2: 'T', 3: 'H', 4: 'W'}  # Control blocks stack outputs of shape [bidx+2, B, T, H, W, D]
             if self.block_index == 0:
-                dynamic_axes["c"] = {2: 'H', 3: 'W'}
+                dynamic_axes["c"] = {1: 'T', 2: 'H', 3: 'W'}
             else:
                 dynamic_axes.pop("x_B_T_H_W_D")
-                dynamic_axes["c"] = {3: 'H', 4: 'W'}  # For subsequent blocks shape becomes [bidx+1, B, T, H, W, D]
+                dynamic_axes["c"] = {2: 'T', 3: 'H', 4: 'W'}  # For subsequent blocks shape becomes [bidx+1, B, T, H, W, D]
         else:
-            dynamic_axes["output"] = {2: 'H', 3: 'W'}
+            dynamic_axes["output"] = {1: 'T', 2: 'H', 3: 'W'}
             if self.receives_control:
-                dynamic_axes["hints"] = {3: 'H', 4: 'W'}  # Assume a stacked tensor rather than list of control outputs
+                dynamic_axes["hints"] = {2: 'T', 3: 'H', 4: 'W'}  # Assume a stacked tensor rather than list of control outputs
         return dynamic_axes

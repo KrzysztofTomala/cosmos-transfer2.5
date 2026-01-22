@@ -85,7 +85,7 @@ def trt_engine_from_onnx_block(
 ):
     resolution_bounds = (min(dims.H, dims.W), max(dims.H, dims.W))
     bounds = explicit_bounds or OperationalBounds(
-        T_MIN=dims.T,
+        T_MIN=1,
         T_MAX=dims.T,
         H_MIN=resolution_bounds[0],
         W_MIN=resolution_bounds[0],
