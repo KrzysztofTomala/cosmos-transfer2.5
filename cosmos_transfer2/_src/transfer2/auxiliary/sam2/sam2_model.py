@@ -26,6 +26,16 @@ from cosmos_transfer2._src.imaginaire.flags import INTERNAL
 
 if not INTERNAL:
     from sam2.build_sam import build_sam2_video_predictor
+    from sam2.sam2_video_predictor import SAM2VideoPredictor
+
+    from cosmos_transfer2._src.transfer2.auxiliary.sam2.sam2_utils import (
+        capture_fps,
+        convert_masks_to_frames,
+        generate_tensor_from_images,
+        video_to_frames,
+        write_video,
+    )
+
 from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
 logger = logging.getLogger(__name__)
@@ -64,15 +74,6 @@ else:
     )
     logger.error(error_msg)
     raise FileNotFoundError(error_msg)
-
-
-from cosmos_transfer2._src.transfer2.auxiliary.sam2.sam2_utils import (
-    capture_fps,
-    convert_masks_to_frames,
-    generate_tensor_from_images,
-    video_to_frames,
-    write_video,
-)
 
 
 def rle_encode(mask: np.ndarray) -> dict:

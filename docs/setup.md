@@ -5,7 +5,7 @@
 * NVIDIA GPUs with Ampere architecture (RTX 30 Series, A100) or newer
 * NVIDIA driver >=570.124.06 compatible with [CUDA 12.8.1](https://docs.nvidia.com/cuda/archive/12.8.1/cuda-toolkit-release-notes/index.html#cuda-toolkit-major-component-versions)
 * Linux x86-64
-* glibc>=2.31 (e.g Ubuntu >=22.04)
+* glibc>=2.35 (e.g Ubuntu >=22.04)
 * Python 3.10
 
 ## Installation
@@ -19,6 +19,10 @@ cd cosmos-transfer2.5
 
 Install system dependencies:
 
+```shell
+sudo apt install curl ffmpeg tree wget
+```
+
 [uv](https://docs.astral.sh/uv/getting-started/installation/)
 
 ```shell
@@ -29,22 +33,27 @@ source $HOME/.local/bin/env
 Install the package into a new environment:
 
 ```shell
-uv sync
+uv sync --extra=cu128
 source .venv/bin/activate
 ```
 
 Or, install the package into the active environment (e.g. conda):
 
 ```shell
-uv sync --active --inexact
+uv sync --extra=cu128 --active --inexact
 ```
+
+CUDA variants:
+
+* `--extra=cu128`: CUDA 12.8 + PyTorch 2.7
+* `--extra=cu129`: CUDA 12.9 + PyTorch 2.8
 
 ## Downloading Checkpoints
 
 1. Get a [Hugging Face Access Token](https://huggingface.co/settings/tokens) with `Read` permission
 2. Install [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/en/guides/cli): `uv tool install -U "huggingface_hub[cli]"`
 3. Login: `hf auth login`
-4. Accept the [NVIDIA Open Model License Agreement](https://huggingface.co/nvidia/Cosmos-Predict2.5-2B).
+4. Accept the [NVIDIA Open Model License Agreement](https://huggingface.co/nvidia/Cosmos-Transfer2.5-2B).
 
 Checkpoints are automatically downloaded during inference and post-training. To modify the checkpoint cache location, set the [`HF_HOME`](https://huggingface.co/docs/huggingface_hub/en/package_reference/environment_variables#hfhome) environment variable.
 
@@ -52,7 +61,7 @@ Checkpoints are automatically downloaded during inference and post-training. To 
 
 ### Docker container
 
-Please make sure you have access to Docker on your machine and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) is installed. To avoid running out of file descriptors when building the container, increase the limit with `--ulimit nofile` as in the example below. We recommend setting the environment variable `HF_HOME` to a path available to the container so that you do not need to redownload the checkpoints every time you run the container. Finally, it is easy to run out of shared memory for parallel torchrun, so consider setting `--shm-size` high or using `--ipc=host` (if allowed by your security policy) in your docker run command.
+Please make sure you have access to Docker on your machine and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) is installed. To avoid running out of file descriptors when building the container, increase the limit with `--ulimit nofile` as in the example below.
 
 Example build command:
 
@@ -63,5 +72,5 @@ docker build --ulimit nofile=131071:131071 -f Dockerfile . -t cosmos-transfer-2.
 Example run command:
 
 ```bash
-docker run --gpus all --rm -v .:/workspace -v /workspace/.venv -v ${HF_HOME:-$HOME/.cache/huggingface}:/root/.cache/huggingface -e HF_HOME=/root/.cache/huggingface -it --ipc=host cosmos-transfer-2.5
+docker run --gpus all --rm -v .:/workspace -v /workspace/.venv -it cosmos-transfer-2.5
 ```

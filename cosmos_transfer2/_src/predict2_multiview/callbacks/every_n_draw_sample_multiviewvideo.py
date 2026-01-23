@@ -37,10 +37,9 @@ from cosmos_transfer2._src.predict2.callbacks.every_n_draw_sample import (
     resize_image,
 )
 from cosmos_transfer2._src.predict2.models.video2world_model import NUM_CONDITIONAL_FRAMES_KEY
-from cosmos_transfer2._src.predict2_multiview.models.multiview_vid2vid_model import (
+from cosmos_transfer2._src.predict2_multiview.models.multiview_vid2vid_model_rectified_flow import (
     TRAIN_SAMPLE_N_VIEWS_KEY,
-    USE_APG_KEY,
-    MultiviewVid2VidModel,
+    MultiviewVid2VidModelRectifiedFlow,
 )
 
 try:
@@ -60,6 +59,29 @@ except Exception as e:  # ImportError cannot catch all problems
 CONTROL_WEIGHT_KEY = "control_weight"
 
 
+camera_to_view_id = {
+    "camera_cross_left_120fov": 5,
+    "camera_cross_right_120fov": 1,
+    "camera_front_tele_30fov": 6,
+    "camera_front_wide_120fov": 0,
+    "camera_rear_left_70fov": 4,
+    "camera_rear_right_70fov": 2,
+    "camera_rear_tele_30fov": 3,
+}
+
+visualization_camera_order = [
+    "camera_rear_left_70fov",
+    "camera_cross_left_120fov",
+    "camera_front_wide_120fov",
+    "camera_cross_right_120fov",
+    "camera_rear_right_70fov",
+    "camera_rear_tele_30fov",
+    "camera_front_tele_30fov",
+]
+
+visualization_view_index_order = [camera_to_view_id[camera] for camera in visualization_camera_order]
+
+
 class EveryNDrawSampleMultiviewVideo(EveryNDrawSample):
     """
     This class is a modified version of EveryNDrawSample that saves 12 frames instead of 3.
@@ -73,6 +95,7 @@ class EveryNDrawSampleMultiviewVideo(EveryNDrawSample):
         dataset_name=None,
         ctrl_hint_keys=None,
         control_weights=[1.0],
+        num_cond_frames=[0, 1],
         fix_batch_fp=None,  # For backward compatibility with transfer2 experiments
         n_x0_level=None,  # For backward compatibility with transfer2 experiments
         show_all_frames=None,  # For backward compatibility with transfer2 experiments
@@ -102,6 +125,7 @@ class EveryNDrawSampleMultiviewVideo(EveryNDrawSample):
         self.dataset_name = dataset_name
         self.ctrl_hint_keys = ctrl_hint_keys
         self.control_weights = control_weights
+        self.num_cond_frames = num_cond_frames
         self.is_x0 = self.do_x0_prediction
         if not hasattr(self, "fix_batch"):
             self.fix_batch = None
@@ -117,7 +141,7 @@ class EveryNDrawSampleMultiviewVideo(EveryNDrawSample):
         # Hydra's instantiate turns the DictConfig node into a real DataLoader
         return iter(instantiate(cfg.dataloader_train))
 
-    def on_train_start(self, model: MultiviewVid2VidModel, iteration: int = 0) -> None:
+    def on_train_start(self, model: MultiviewVid2VidModelRectifiedFlow, iteration: int = 0) -> None:
         if self.dataset_name is not None:
             self.dataloader_iter = self.get_dataloader_iter(self.dataset_name)
         return super().on_train_start(model, iteration)
@@ -212,7 +236,7 @@ class EveryNDrawSampleMultiviewVideo(EveryNDrawSample):
                     resize_image(image_grid_12frames, 1024), local_path_12frames, nrow=1, scale_each=True
                 )
                 # Create a single stacked video
-                video_tensor = rearrange(to_show, "n b c (v t) h w -> t (n h) (b v w) c", v=n_views)
+                video_tensor = rearrange(to_show, "n b c t h (v w) -> t (n h) (b v w) c", v=n_views)
 
                 # Resize width to 1024 while preserving aspect ratio (keep float to avoid quantization before resize)
                 max_w = 2048
@@ -245,28 +269,25 @@ class EveryNDrawSampleMultiviewVideo(EveryNDrawSample):
         new_data_batch["view_indices"] = data_batch["view_indices"][:, 0:new_total_frames]
         new_data_batch["sample_n_views"] = 0 * data_batch["sample_n_views"] + n_views
         new_data_batch["fps"] = data_batch["fps"]
-        new_data_batch["t5_text_embeddings"] = data_batch["t5_text_embeddings"][:, 0:new_total_t5_dim]
-        new_data_batch["t5_text_mask"] = data_batch["t5_text_mask"][:, 0:new_total_t5_dim]
-        split_captions = data_batch["ai_caption"][0].split(" -- ")
-        assert len(split_captions) == 6, f"Expected 6 view captions, got {len(split_captions)}"
-        new_data_batch["ai_caption"] = [" -- ".join(split_captions[0:n_views])]
-        new_data_batch["n_orig_video_frames_per_view"] = data_batch["n_orig_video_frames_per_view"]
-        assert data_batch["ref_cam_view_idx_sample_position"].item() == -1, (
-            f"ref_cam_view_idx_sample_position is not supported by batch sampling, got {data_batch['ref_cam_view_idx_sample_position']}"
-        )
-        new_data_batch["ref_cam_view_idx_sample_position"] = data_batch["ref_cam_view_idx_sample_position"]
-        new_data_batch["camera_keys_selection"] = data_batch["camera_keys_selection"][0:n_views]
-        new_data_batch["view_indices_selection"] = data_batch["view_indices_selection"]
+        if "t5_text_embeddings" in data_batch:
+            new_data_batch["t5_text_embeddings"] = data_batch["t5_text_embeddings"][:, 0:new_total_t5_dim]
+        if "t5_text_mask" in data_batch:
+            new_data_batch["t5_text_mask"] = data_batch["t5_text_mask"][:, 0:new_total_t5_dim]
+        split_captions = data_batch["ai_caption"][0]
+        assert len(split_captions) == 7, f"Expected 7 view captions, got {len(split_captions)}"
+        new_data_batch["ai_caption"] = [split_captions[0:n_views]]
         for key in [
             "__url__",
             "__key__",
             "__t5_url__",
             "image_size",
             "num_video_frames_per_view",
+            "n_orig_video_frames_per_view",
             "aspect_ratio",
             "padding_mask",
         ]:
-            new_data_batch[key] = data_batch[key]
+            if key in data_batch:
+                new_data_batch[key] = data_batch[key]
         if TRAIN_SAMPLE_N_VIEWS_KEY in data_batch:
             new_data_batch[TRAIN_SAMPLE_N_VIEWS_KEY] = 0  # Model will not apply additional sampling
         old_keys = set(list(data_batch.keys()))
@@ -416,7 +437,7 @@ class EveryNDrawSampleMultiviewVideo(EveryNDrawSample):
         Args:
             skip_save: to make sure FSDP can work, we run forward pass on all ranks even though we only save on rank 0 and 1
         """
-        n_views = int(data_batch["sample_n_views"].cpu()[0])
+        n_views = len(data_batch["view_indices_selection"][0])
         if self.fix_batch is not None:
             data_batch = misc.to(self.fix_batch, **model.tensor_kwargs)
         tag = "ema" if self.is_ema else "reg"
@@ -436,12 +457,64 @@ class EveryNDrawSampleMultiviewVideo(EveryNDrawSample):
                 f"{data_batch['neg_t5_text_embeddings'].shape} != {data_batch['t5_text_embeddings'].shape}"
             )
             data_batch["neg_t5_text_mask"] = data_batch["t5_text_mask"]
+
+        def time_to_width_dimension(mv_video):
+            """
+            Args:
+                mv_video: (B, C, V * T, H, W)
+            Returns:
+                (B, C, T, H, V * W)
+            """
+            current_view_index_order = [i.item() for i in data_batch["view_indices_selection"][0]]
+            expected_view_index_order = visualization_view_index_order
+
+            # Reorder views to match expected visualization order
+            if current_view_index_order != expected_view_index_order:
+                # Create mapping from current order to expected order
+                reorder_indices = []
+                for expected_view in expected_view_index_order:
+                    if expected_view in current_view_index_order:
+                        reorder_indices.append(current_view_index_order.index(expected_view))
+
+                # Reshape to separate view and time dimensions
+                B, C, VT, H, W = mv_video.shape
+                T = VT // n_views
+                mv_video = rearrange(mv_video, "B C (V T) H W -> B C V T H W", V=n_views)
+
+                # Reorder views according to expected order
+                mv_video = mv_video[:, :, reorder_indices, :, :, :]
+
+                # Reshape back to original format
+                mv_video = rearrange(mv_video, "B C V T H W -> B C (V T) H W")
+
+            return rearrange(mv_video, "B C (V T) H W -> B C T H (V W)", V=n_views)
+
+        # GPU memory management before sampling to avoid OOM
+        if torch.cuda.is_available():
+            mem_allocated_before = torch.cuda.memory_allocated() / 1e9
+            mem_reserved_before = torch.cuda.memory_reserved() / 1e9
+            print(
+                f"[Rank {dist.get_rank() if dist.is_initialized() else 0}] Before sampling - "
+                f"Allocated: {mem_allocated_before:.2f}GB, Reserved: {mem_reserved_before:.2f}GB"
+            )
+
+            # Clear GPU cache to free up fragmented memory
+            torch.cuda.empty_cache()
+
+            mem_allocated_after = torch.cuda.memory_allocated() / 1e9
+            mem_reserved_after = torch.cuda.memory_reserved() / 1e9
+            print(
+                f"[Rank {dist.get_rank() if dist.is_initialized() else 0}] After cleanup - "
+                f"Allocated: {mem_allocated_after:.2f}GB, Reserved: {mem_reserved_after:.2f}GB "
+                f"(freed: Allocated={mem_allocated_before - mem_allocated_after:.2f}GB, "
+                f"Reserved={mem_reserved_before - mem_reserved_after:.2f}GB)"
+            )
+
         to_show = []
         # for use_apg in [False, True]:
         for use_apg in [False]:
-            for num_cond_frames in [0, 1]:
+            for num_cond_frames in self.num_cond_frames:
                 for control_weight in self.control_weights:
-                    data_batch[USE_APG_KEY] = use_apg
                     data_batch[NUM_CONDITIONAL_FRAMES_KEY] = num_cond_frames
                     data_batch[CONTROL_WEIGHT_KEY] = control_weight
                     for guidance in self.guidance:
@@ -475,9 +548,10 @@ class EveryNDrawSampleMultiviewVideo(EveryNDrawSample):
                         log.info(f"hint: {hint.shape}")
                         to_show.append(hint.float().cpu())
 
-        base_fp_wo_ext = f"{tag}_ReplicateID{self.data_parallel_id:04d}_Sample_Iter{iteration:09d}_{n_views}views"
+        if n_views == 7:
+            to_show = [time_to_width_dimension(t) for t in to_show]
 
-        # batch_size = output_batch["x0"].shape[0]
+        base_fp_wo_ext = f"{tag}_ReplicateID{self.data_parallel_id:04d}_Sample_Iter{iteration:09d}_{n_views}views"
         batch_size = x0.shape[0]
 
         if is_tp_cp_pp_rank0():

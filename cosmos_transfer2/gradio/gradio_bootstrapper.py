@@ -28,7 +28,11 @@ def create_control2world():
 
     global_env = DeploymentEnv()
     log.info(f"Creating control2world pipeline with {global_env=}")
-    pipeline = Control2World_Worker(model=global_env.model_name, num_gpus=global_env.num_gpus)
+    pipeline = Control2World_Worker(
+        model=global_env.model_name,
+        num_gpus=global_env.num_gpus,
+        disable_guardrails=global_env.disable_guardrails,
+    )
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -44,6 +48,7 @@ def create_multiview():
     assert global_env.num_gpus == 8, "Multiview currently requires 8 GPUs"
     pipeline = Multiview_Worker(
         num_gpus=global_env.num_gpus,
+        disable_guardrails=global_env.disable_guardrails,
     )
     gc.collect()
     torch.cuda.empty_cache()
@@ -76,6 +81,7 @@ if __name__ == "__main__":
         "depth": "create_control2world",
         "edge": "create_control2world",
         "seg": "create_control2world",
+        "multicontrol": "create_control2world",
         "multiview": "create_multiview",
     }
 
@@ -84,6 +90,7 @@ if __name__ == "__main__":
         "depth": validate_control2world,
         "edge": validate_control2world,
         "seg": validate_control2world,
+        "multicontrol": validate_control2world,
         "multiview": validate_multiview,
     }
 
@@ -111,5 +118,5 @@ if __name__ == "__main__":
         share=False,
         debug=True,
         max_file_size="500MB",
-        allowed_paths=[deploy_cfg.output_dir, deploy_cfg.uploads_dir],
+        allowed_paths=deploy_cfg.allowed_paths,
     )

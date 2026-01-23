@@ -101,18 +101,18 @@ def worker_main():
 
     rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
-    log.info(f"Worker init {rank + 1}/{world_size}")
+    log.info(f"Worker init {rank + 1}/{world_size} {os.getcwd()}")
 
     worker_cmd = WorkerCommand(world_size)
     worker_status = WorkerStatus(world_size)
 
     factory_module = os.environ.get("FACTORY_MODULE")
     factory_function = os.environ.get("FACTORY_FUNCTION", "create_worker")
+    pipeline = None
 
     try:
         pipeline = create_worker_pipeline(factory_module, factory_function)
-        # pyrefly: ignore  # bad-argument-type
-        worker_status.signal_status(rank, "success", "Worker initialized successfully")
+        worker_status.signal_status(rank, "success", {"message": "Worker initialized successfully"})
 
         while True:
             try:
@@ -133,26 +133,21 @@ def worker_main():
                     break
                 else:
                     log.warning(f"Worker {rank} received unknown command: {command}")
-                    # pyrefly: ignore  # bad-argument-type
-                    worker_status.signal_status(rank, "error", f"Unknown command: {command}")
+                    worker_status.signal_status(rank, status=f"Unknown command: {command}")
 
             except Exception as e:
                 log.error(f"Worker {rank} error processing command: {e}")
                 log.error(traceback.format_exc())
-                # pyrefly: ignore  # bad-argument-type
-                worker_status.signal_status(rank, "error", str(e) + f"\n{traceback.format_exc()}")
+                worker_status.signal_status(rank, status=str(e) + f"\n{traceback.format_exc()}")
 
     except Exception as e:
         log.error(f"Worker {rank} initialization error processing: {e}")
         log.error(traceback.format_exc())
-        # pyrefly: ignore  # bad-argument-type
-        worker_status.signal_status(rank, "error", str(e) + f"\n{traceback.format_exc()}")
+        worker_status.signal_status(rank, status=str(e) + f"\n{traceback.format_exc()}")
     finally:
         log.info(f"Worker {rank} shutting down...")
 
-        # pyrefly: ignore  # unbound-name
         if pipeline:
-            # pyrefly: ignore  # unbound-name
             del pipeline
 
         worker_cmd.cleanup()

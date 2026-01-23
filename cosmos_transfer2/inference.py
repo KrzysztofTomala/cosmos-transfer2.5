@@ -13,32 +13,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from cosmos_transfer2._src.imaginaire.auxiliary.guardrail.common import presets as guardrail_presets
+from cosmos_transfer2._src.imaginaire.flags import SMOKE
 from cosmos_transfer2._src.imaginaire.lazy_config.lazy import LazyConfig
-from cosmos_transfer2._src.imaginaire.utils import log
+from cosmos_transfer2._src.imaginaire.utils import distributed, log
 from cosmos_transfer2._src.imaginaire.visualize.video import save_img_or_video
 from cosmos_transfer2._src.transfer2.configs.vid2vid_transfer.experiment.experiment_list import EXPERIMENTS
 from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
-from cosmos_transfer2.config import MODEL_CHECKPOINTS, InferenceArguments, ModelKey, SetupArguments, path_to_str
+from cosmos_transfer2._src.transfer2.inference.utils import compile_tokenizer_if_enabled
+from cosmos_transfer2.config import (
+    MODEL_CHECKPOINTS,
+    InferenceArguments,
+    ModelKey,
+    SetupArguments,
+    is_rank0,
+    path_to_str, ModelVariant,
+)
 
 
 class Control2WorldInference:
     def __init__(
         self,
         args: SetupArguments,
-        batch_hint_keys: list[str],
+        batch_hint_keys: list[str | ModelVariant],
     ) -> None:
+        log.debug(f"{args.__class__.__name__}({args})({batch_hint_keys})")
         self.setup_args = args
-        self.batch_hint_keys = batch_hint_keys
+        assert batch_hint_keys, "Must specify at least one control modality in `batch_hint_keys`."
+        self.batch_hint_keys = [ModelVariant(hint) for hint in batch_hint_keys]
         if len(self.batch_hint_keys) == 1:
             # pyrefly: ignore  # bad-argument-type
             checkpoint = MODEL_CHECKPOINTS[ModelKey(variant=self.batch_hint_keys[0])]
-            self.checkpoint_list = [checkpoint.path]
+            self.checkpoint_list = [args.checkpoint_path or checkpoint.path]
             self.experiment = checkpoint.experiment
         else:
             # pyrefly: ignore  # bad-argument-type
@@ -54,6 +66,8 @@ class Control2WorldInference:
         # pyrefly: ignore  # unsupported-operation
         if args.context_parallel_size > 1:
             from megatron.core import parallel_state
+
+            distributed.init()
 
             # pyrefly: ignore  # bad-argument-type
             parallel_state.initialize_model_parallel(context_parallel_size=args.context_parallel_size)
@@ -79,7 +93,12 @@ class Control2WorldInference:
             s3_credential_path="",
             exp_override_opts=EXPERIMENTS[self.experiment].command_args,
             process_group=process_group,
+            use_cp_wan=args.enable_parallel_tokenizer,
+            wan_cp_grid=args.parallel_tokenizer_grid,
         )
+
+        compile_tokenizer_if_enabled(self.inference_pipeline, args.compile_tokenizer.value)
+
         if self.device_rank == 0:
             log.info(f"Found {len(self.batch_hint_keys)} hint keys across all samples")
             if len(self.batch_hint_keys) > 1:
@@ -92,20 +111,33 @@ class Control2WorldInference:
             # pyrefly: ignore  # bad-argument-type
             LazyConfig.save_yaml(self.inference_pipeline.config, config_path)
             log.info(f"Saved config to {config_path}")
+        self.benchmark_times = []
 
     def generate(self, samples: list[InferenceArguments], output_dir: Path) -> list[str]:
+        if SMOKE:
+            samples = samples[:1]
+
         sample_names = [sample.name for sample in samples]
         log.info(f"Generating {len(samples)} samples: {sample_names}")
 
         output_paths: list[str] = []
         for i_sample, sample in enumerate(samples):
             log.info(f"[{i_sample + 1}/{len(samples)}] Processing sample {sample.name}")
-            output_path = self._generate_sample(sample, output_dir)
+            output_path = self._generate_sample(sample, output_dir, sample_id=i_sample)
             if output_path is not None:
                 output_paths.append(output_path)
+
+        if is_rank0() and len(self.benchmark_times) > 0:
+            avg_time = sum(self.benchmark_times) / len(self.benchmark_times)
+            log.info("=" * 50)
+            log.info("BENCHMARK RESULTS")
+            log.info("=" * 50)
+            log.info(f"Benchmark runs: {[f'{t:.2f}s' for t in self.benchmark_times]}")
+            log.info(f"Average time (last {self.benchmark_times} runs): {avg_time:.2f} seconds")
+            log.info("=" * 50)
         return output_paths
 
-    def _generate_sample(self, sample: InferenceArguments, output_dir: Path) -> str | None:
+    def _generate_sample(self, sample: InferenceArguments, output_dir: Path, sample_id: int = 0) -> str | None:
         log.debug(f"{sample.__class__.__name__}({sample})")
         output_path = output_dir / sample.name
 
@@ -116,7 +148,7 @@ class Control2WorldInference:
         negative_prompt: str = sample.negative_prompt
 
         if self.device_rank == 0:
-            output_path.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
             open(f"{output_path}.json", "w").write(sample.model_dump_json())
             log.info(f"Saved arguments to {output_path}.json")
 
@@ -125,11 +157,12 @@ class Control2WorldInference:
                 log.info("Running guardrail check on prompt...")
 
                 if not guardrail_presets.run_text_guardrail(prompt, self.text_guardrail_runner):
-                    log.critical("Guardrail blocked control2world generation. Prompt: {prompt}")
+                    message = f"Guardrail blocked generation. Prompt: {prompt}"
+                    log.critical(message)
                     if self.setup_args.keep_going:
                         return None
                     else:
-                        exit(1)
+                        raise Exception(message)
                 else:
                     log.success("Passed guardrail on prompt")
 
@@ -137,8 +170,12 @@ class Control2WorldInference:
                     negative_prompt,
                     self.text_guardrail_runner,
                 ):
-                    log.critical("Guardrail blocked control2world generation. Negative prompt: {neg_prompt}")
-                    exit(1)
+                    message = f"Guardrail blocked generation. Negative prompt: {negative_prompt}"
+                    log.critical(message)
+                    if self.setup_args.keep_going:
+                        return None
+                    else:
+                        raise Exception(message)
                 else:
                     log.success("Passed guardrail on negative prompt")
             elif self.text_guardrail_runner is None:
@@ -156,8 +193,15 @@ class Control2WorldInference:
             control_weight += sample.control_weight_dict.get(key, "0.0") + ","
         control_weight = control_weight[:-1]
 
+        # Measure the time in case of benchmarking, but only for samples which aren't warm-up samples.
+        if sample_id > 0 and self.setup_args.benchmark:
+            torch.cuda.synchronize()
+            start_time = time.time()
+        else:
+            start_time = None
+
         # Run model inference
-        output_video, control_video_dict, fps, _ = self.inference_pipeline.generate_img2world(
+        output_video, control_video_dict, mask_video_dict, fps, _ = self.inference_pipeline.generate_img2world(
             # pyrefly: ignore  # bad-argument-type
             video_path=path_to_str(sample.video_path),
             prompt=prompt,
@@ -182,6 +226,10 @@ class Control2WorldInference:
             num_steps=sample.num_steps,
         )
 
+        if start_time is not None:
+            torch.cuda.synchronize()
+            self.benchmark_times.append(time.time() - start_time)
+
         # Save video
         if self.device_rank == 0:
             output_video = (1.0 + output_video[0]) / 2
@@ -190,6 +238,10 @@ class Control2WorldInference:
                 save_img_or_video(control_video_dict[key], f"{output_path}_control_{key}", fps=fps)
                 log.info(f"{key} control video saved to {output_path}_control_{key}.mp4")
 
+            for key in mask_video_dict:
+                save_img_or_video(mask_video_dict[key], f"{output_path}_mask_{key}", fps=fps)
+                log.info(f"Mask for {key} saved to {output_path}_mask_{key}.mp4")
+
             # run video guardrail on the video
             if self.video_guardrail_runner is not None:
                 log.info("Running guardrail check on video...")
@@ -197,11 +249,10 @@ class Control2WorldInference:
                 frames = frames.permute(1, 2, 3, 0).cpu().numpy().astype(np.uint8)  # (T, H, W, C)
                 processed_frames = guardrail_presets.run_video_guardrail(frames, self.video_guardrail_runner)
                 if processed_frames is None:
-                    log.critical("Guardrail blocked video2world generation.")
                     if self.setup_args.keep_going:
                         return None
                     else:
-                        exit(1)
+                        raise Exception("Guardrail blocked video2world generation.")
                 else:
                     log.success("Passed guardrail on generated video")
 
