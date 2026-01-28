@@ -1843,6 +1843,11 @@ class MiniTrainDIT(WeightTrainingStat):
 
             return out_B_T_H_W_D
 
+        def set_optimization_profile(self, profile: int):
+            assert profile < self.engine.num_optimization_profiles, f"Profile {profile} out of range"
+            if not self.context.set_optimization_profile_async(profile, self.pyt_stream.cuda_stream):
+                raise RuntimeError(f"Failed to set optimization profile {profile}")
+            
     def load_trt(self, block_file_map: dict[str, str]):
         # Load TRT for base blocks
         for iblock in range(len(self.blocks)):

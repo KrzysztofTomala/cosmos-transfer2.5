@@ -514,6 +514,9 @@ class ControlVideo2WorldModelRectifiedFlow(Video2WorldModelRectifiedFlow):
 
         self.net.load_trt(block_file_map)
 
+    def set_optimization_profile(self, profile: int):
+        self.net.set_optimization_profile(profile)
+
     def load_multi_branch_checkpoints(self, checkpoint_paths: list[str]):
         """
         Load control blocks from multiple checkpoint paths into control_blocks_0, control_blocks_1, etc.

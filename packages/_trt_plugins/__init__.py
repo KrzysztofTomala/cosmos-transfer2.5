@@ -39,7 +39,10 @@ _trt2pt_dtype = {
 
 def create_execution_context_from_pool(engine):
     # Currently each engine only has one profile
-    req_size = engine.get_device_memory_size_for_profile(0)
+    num_profiles = engine.num_optimization_profiles
+    req_size = 0
+    for profile_idx in range(num_profiles):
+        req_size = max(engine.get_device_memory_size_for_profile(profile_idx), req_size)
     if _trt_existing_context.device_memory is None or _trt_existing_context.device_memory.numel() < req_size:
         log.info(f"Reallocating {req_size/1024**3:.2f}G of scratch space")
         # Reallocate new scratch space

@@ -960,6 +960,17 @@ class MinimalV4LVGControlVaceDiT(MiniTrainDITImageContext):
 
             return out_B_T_H_W_D
 
+    def set_optimization_profile(self, profile: int):
+        for block in self.blocks:
+            block.set_optimization_profile(profile)
+        if self.num_control_branches > 1:
+            for nc in range(self.num_control_branches):
+                for block in getattr(self, f"control_blocks_{nc}"):
+                    block.set_optimization_profile(profile)
+        else:
+            for block in self.control_blocks:
+                block.set_optimization_profile(profile)
+
     def load_trt(self, block_file_map: dict[str, str]):
         def _init(blocks, block_index, block_id, block_label, trt_class):
             blocks[block_index] = None
