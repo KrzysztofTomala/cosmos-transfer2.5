@@ -97,6 +97,7 @@ class ControlVideo2WorldInference:
                 cache_dir if not checkpoint_paths else None
             ),  # for multi-control models, need to load other branches before caching
             experiment_opts=exp_override_opts,
+            skip_load_model=skip_load_model,
         )
         if (
             isinstance(checkpoint_paths, list) and len(checkpoint_paths) > 1 and not skip_load_model

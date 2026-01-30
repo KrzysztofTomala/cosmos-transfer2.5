@@ -41,6 +41,7 @@ def load_model_from_checkpoint(
     local_cache_dir=None,
     override_cache: bool = False,
     experiment_opts: list[str] = [],
+    skip_load_model: bool = False,
 ):
     """
     experiment_name: experiment name
@@ -89,9 +90,10 @@ def load_model_from_checkpoint(
         # Convert the model parameters to bf16
         model.on_train_start()
 
-    model = load_model_state_dict_from_checkpoint(
-        model, config, s3_checkpoint_dir, load_ema_to_reg, local_cache_dir, override_cache
-    )
+    if not skip_load_model:
+        model = load_model_state_dict_from_checkpoint(
+            model, config, s3_checkpoint_dir, load_ema_to_reg, local_cache_dir, override_cache
+        )
 
     return model, config
 
