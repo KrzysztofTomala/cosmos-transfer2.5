@@ -20,13 +20,13 @@ import pydantic
 import torch
 from megatron.core import parallel_state
 
+from cosmos_transfer2._src.transfer2.configs.vid2vid_transfer.experiment.experiment_list import EXPERIMENTS
 from cosmos_transfer2._src.imaginaire.utils import distributed, log, misc
 from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
 from cosmos_transfer2.config import MODEL_CHECKPOINTS, ModelKey, SetupArguments
 from cosmos_transfer2.inference import Control2WorldInference
 from scripts.byoc_utils.model import ModelMeta, SCRIPTS_ROOT, ModelDimensions, get_model_dimensions
 
-DIT_PATH = "checkpoints/nvidia/Cosmos-Transfer2.5-2B/{domain}/{modality}/{checkpoint_name}"
 
 QUANTIZATION_MODES = {
     "FP8": mtq.FP8_DEFAULT_CFG,
@@ -47,7 +47,7 @@ class PipelineArgs(pydantic.BaseModel):
 
     # Optional parameters
     # pyrefly: ignore  # invalid-annotation
-    checkpoint_name: str | None = None
+    checkpoint_paths: dict[str, str] = {}
     """Filename of checkpoint."""
     num_gpus: int = 1
     """Number of available GPUs."""
@@ -65,38 +65,26 @@ def setup_pipeline(args: PipelineArgs):
     log.info(f"Using model variant: {args.model.name}")
     model_key = ModelKey(variant=args.model.variant)
 
-    if args.checkpoint_name:
-        checkpoint_path = DIT_PATH.format(
-            domain=args.model.domain, modality=args.model.hint_key, checkpoint_name=args.checkpoint_name)
-    else:
-        try:
-            model_checkpoint = MODEL_CHECKPOINTS[model_key]
-            checkpoint_path = model_checkpoint.path
-        except KeyError as e:
-            raise NotImplementedError(f"Model configuration not supported") from e
-        except ValueError as e:
-            # raised upon calling `.path` property if the checkpoint does not specify a HuggingFace location
-            raise NotImplementedError(f"No HF repository defined") from e
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Model checkpoint not found: {checkpoint_path}")
+    checkpoint_path = args.checkpoint_paths
 
-    setup_args = SetupArguments.model_validate({
-        # Required parameters
-        "output_dir": args.output_dir,
-        # Optional parameters
-        "model": model_key.name,
-        "checkpoint_path": checkpoint_path,
-        "context_parallel_size": args.num_gpus,
-        "disable_guardrails": args.disable_guardrail,
-        "offload_guardrail_models": args.offload_guardrail,
-        "benchmark": args.benchmark,
-    })
 
-    if setup_args.benchmark:
-        log.warning(
-            "Running in benchmark mode. Each generation will be rerun a couple of times and the average generation "
-            "time will be shown."
-        )
+    # setup_args = SetupArguments.model_validate({
+    #     # Required parameters
+    #     "output_dir": args.output_dir,
+    #     # Optional parameters
+    #     "model": model_key.name,
+    #     "checkpoint_path": checkpoint_path,
+    #     "context_parallel_size": args.num_gpus,
+    #     "disable_guardrails": args.disable_guardrail,
+    #     "offload_guardrail_models": args.offload_guardrail,
+    #     "benchmark": args.benchmark,
+    # })
+
+    # if setup_args.benchmark:
+    #     log.warning(
+    #         "Running in benchmark mode. Each generation will be rerun a couple of times and the average generation "
+    #         "time will be shown."
+    #     )
 
     misc.set_random_seed(seed=args.seed, by_rank=True)
     # Initialize cuDNN.
@@ -107,29 +95,47 @@ def setup_pipeline(args: PipelineArgs):
     torch.backends.cuda.matmul.allow_tf32 = True
 
     # Initialize distributed environment for multi-GPU inference
-    if args.num_gpus > 1:
-        log.info(f"Initializing distributed environment with {args.num_gpus} GPUs for context parallelism")
+    # if args.num_gpus > 1:
+    #     log.info(f"Initializing distributed environment with {args.num_gpus} GPUs for context parallelism")
 
-        # Check if distributed environment is already initialized
-        if not parallel_state.is_initialized():
-            distributed.init()
-            parallel_state.initialize_model_parallel(context_parallel_size=args.num_gpus)
-            log.info(f"Context parallel group initialized with {args.num_gpus} GPUs")
-        else:
-            log.info("Distributed environment already initialized, skipping initialization")
-            # Check if we need to reinitialize with different context parallel size
-            current_cp_size = parallel_state.get_context_parallel_world_size()
-            if current_cp_size != args.num_gpus:
-                log.warning(f"Context parallel size mismatch: current={current_cp_size}, requested={args.num_gpus}")
-                log.warning("Using existing context parallel configuration")
-            else:
-                log.info(f"Using existing context parallel group with {current_cp_size} GPUs")
+    #     # Check if distributed environment is already initialized
+    #     if not parallel_state.is_initialized():
+    #         distributed.init()
+    #         parallel_state.initialize_model_parallel(context_parallel_size=args.num_gpus)
+    #         log.info(f"Context parallel group initialized with {args.num_gpus} GPUs")
+    #     else:
+    #         log.info("Distributed environment already initialized, skipping initialization")
+    #         # Check if we need to reinitialize with different context parallel size
+    #         current_cp_size = parallel_state.get_context_parallel_world_size()
+    #         if current_cp_size != args.num_gpus:
+    #             log.warning(f"Context parallel size mismatch: current={current_cp_size}, requested={args.num_gpus}")
+    #             log.warning("Using existing context parallel configuration")
+    #         else:
+    #             log.info(f"Using existing context parallel group with {current_cp_size} GPUs")
+
+
+
 
     # Load models
+    registered_exp_name = EXPERIMENTS['multibranch_720p_t24_spaced_layer4_cr1pt1_rectified_flow_inference'].registered_exp_name
+    exp_override_opts = EXPERIMENTS['multibranch_720p_t24_spaced_layer4_cr1pt1_rectified_flow_inference'].command_args.copy()
+    
+    log.info(f"args.model: {args.model}")
     log.info(f"Initializing ControlVideo2WorldInference for model: {args.model.name}")
     log.info(f"Using batch_hint_keys: {args.model.hint_keys}")
-    inference = Control2WorldInference(setup_args, batch_hint_keys=args.model.hint_keys)
-    return inference.inference_pipeline
+    # log.info(f"setup_args: {setup_args}")
+    #inference = Control2WorldInference(setup_args, batch_hint_keys=args.model.hint_keys)
+    log.info(f"checkpoint_path: {checkpoint_path}")
+    log.info(f"checkpoint_paths: {[checkpoint_path[i] for i in args.model.hint_keys]}")
+
+    inference_pipeline = ControlVideo2WorldInference(
+        registered_exp_name=registered_exp_name,
+        checkpoint_paths=[checkpoint_path[i] for i in args.model.hint_keys],
+        s3_credential_path="",
+        exp_override_opts=exp_override_opts,
+        process_group=None,
+    )
+    return inference_pipeline
 
 
 def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[ControlVideo2WorldInference, PipelineArgs, ModelDimensions]:

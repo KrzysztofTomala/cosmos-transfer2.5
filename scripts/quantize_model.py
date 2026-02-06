@@ -26,6 +26,10 @@ import modelopt.torch.quantization as mtq
 import modelopt.torch.opt as mto
 import torch
 import tqdm
+from nimlib import nimutils
+
+model_manifest = (nimutils.get_model_manifest())  # sets nimutils._MODEL_MANIFEST if not yet set
+nimutils.download_models(model_manifest)
 
 from cosmos_transfer2._src.imaginaire.utils import distributed, log
 from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
@@ -116,7 +120,16 @@ def make_parser():
                              "or multiple variants (e.g., edge vis depth seg) for multicontrol mode.")
     parser.add_argument("--output_dir", type=str, default="output",
                         help="Folder to save quantized checkpoint.")
-    parser.add_argument("--checkpoint_name", type=str, default="",
+    parser.add_argument("--edge_checkpoint_name", type=str, default="",
+                        help="Optionally override checkpoint filename (`*.pt`) to load for calibration. Defaults to the"
+                             " registered post-trained checkpoint.")
+    parser.add_argument("--depth_checkpoint_name", type=str, default="",
+                        help="Optionally override checkpoint filename (`*.pt`) to load for calibration. Defaults to the"
+                             " registered post-trained checkpoint.")
+    parser.add_argument("--seg_checkpoint_name", type=str, default="",
+                        help="Optionally override checkpoint filename (`*.pt`) to load for calibration. Defaults to the"
+                             " registered post-trained checkpoint.")
+    parser.add_argument("--vis_checkpoint_name", type=str, default="",
                         help="Optionally override checkpoint filename (`*.pt`) to load for calibration. Defaults to the"
                              " registered post-trained checkpoint.")
     parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
@@ -266,10 +279,16 @@ def main(cmdargs) -> str:
     input_file = "optim_dit_args_multicontrol.json" if len(model_variant) > 1 else "optim_dit_args.json"
     with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", input_file), "rt") as f:
         args: dict = json.load(f)
+        checkpoint_base_path = '/opt/nim/workspace/'
+        args["checkpoint_paths"] = {
+        "edge": args["edge_checkpoint_name"] or checkpoint_base_path + "general/edge/ecd0ba00-d598-4f94-aa09-e8627899c431_ema_bf16.pt",
+        "depth": args["depth_checkpoint_name"] or checkpoint_base_path +  "general/depth/0f214f66-ae98-43cf-ab25-d65d09a7e68f_ema_bf16.pt",
+        "seg": args["seg_checkpoint_name"] or checkpoint_base_path + "general/seg/fcab44fe-6fe7-492e-b9c6-67ef8c1a52ab_ema_bf16.pt",
+        "vis": args["vis_checkpoint_name"] or checkpoint_base_path + "general/blur/20d9fd0b-af4c-4cca-ad0b-f9b45f0805f1_ema_bf16.pt",
+    }
         args.update({
             "model": model_meta,
             "output_dir": cmdargs.output_dir,
-            "checkpoint_name": cmdargs.checkpoint_name,
             "resolution": cmdargs.resolution,
             "calibration_mode": cmdargs.calibration_mode,
             "calibration_dataset": cmdargs.calibration_dataset or model_meta.calibration_dataset,
