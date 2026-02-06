@@ -46,7 +46,10 @@ _trt2pt_dtype = {
 
 def create_execution_context_from_pool(engine):
     # Currently each engine only has one profile
-    req_size = engine.get_device_memory_size_for_profile(0)
+    num_profiles = engine.num_optimization_profiles
+    req_size = 0
+    for profile_idx in range(num_profiles):
+        req_size = max(engine.get_device_memory_size_for_profile(profile_idx), req_size)
     if _TRT_EXISTING_CONTEXT.device_memory is None or _TRT_EXISTING_CONTEXT.device_memory.numel() < req_size:
         log.info(f"Reallocating {req_size/1024**3:.2f}G of scratch space")
         # Reallocate new scratch space
@@ -83,21 +86,24 @@ def trt_engine_from_onnx_block(
     optimization_level: int = 3,
     explicit_bounds: OperationalBounds = None,
 ):
-    resolution_bounds = (min(dims.H, dims.W), max(dims.H, dims.W))
-    bounds = explicit_bounds or OperationalBounds(
-        T_MIN=1,
-        T_MAX=dims.T,
-        H_MIN=resolution_bounds[0],
-        W_MIN=resolution_bounds[0],
-        H_MAX=resolution_bounds[1],
-        W_MAX=resolution_bounds[1],
-    )
-
     # Prepare build config
     config = trt_builder.create_builder_config()
     config.builder_optimization_level = optimization_level
-    profile = optimization_profile_block(trt_builder, block_meta, dims, bounds)
-    config.add_optimization_profile(profile)
+    resolution_profiles = {} # {resulution: profile_idx}
+    for profile_idx, (resolution, model_dim) in enumerate(dims.items()):
+        resolution_bounds = (min(model_dim.H, model_dim.W), max(model_dim.H, model_dim.W))
+        bounds = explicit_bounds or OperationalBounds(
+            T_MIN=1,
+            T_MAX=model_dim.T,
+            H_MIN=resolution_bounds[0],
+            W_MIN=resolution_bounds[0],
+            H_MAX=resolution_bounds[1],
+            W_MAX=resolution_bounds[1],
+        )
+
+        profile = optimization_profile_block(trt_builder, block_meta, model_dim, bounds)
+        config.add_optimization_profile(profile)
+        resolution_profiles[resolution] = profile_idx
 
     # Prepare graph and load block
     log.info(f"Loading ONNX block from {onnx_path}")
@@ -116,9 +122,9 @@ def trt_engine_from_onnx_block(
     # Build engine
     log.info("Building TRT engine from ONNX")
     engine_serialized = trt_builder.build_serialized_network(network, config)
-    log.info(f"Built TRT engine")
+    log.info(f"Built TRT engine with {len(resolution_profiles)} resolution profiles: {resolution_profiles}")
 
-    return engine_serialized
+    return engine_serialized, resolution_profiles
 
 
 def optimization_profile_block(trt_builder, block_meta: BlockMeta, dims: ModelDimensions, bounds: OperationalBounds):

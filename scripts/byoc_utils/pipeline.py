@@ -14,6 +14,7 @@
 # limitations under the License.
 import json
 import os
+from typing import Union
 
 import modelopt.torch.quantization as mtq
 import pydantic
@@ -138,7 +139,7 @@ def setup_pipeline(args: PipelineArgs):
     return inference_pipeline
 
 
-def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[ControlVideo2WorldInference, PipelineArgs, ModelDimensions]:
+def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[ControlVideo2WorldInference, PipelineArgs, Union[ModelDimensions, dict[str, ModelDimensions]]]:
     variants = overrides.pop("model_variant")
     if isinstance(variants, list):
         input_file = "optim_dit_args_multicontrol.json"
@@ -158,5 +159,10 @@ def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[Control
     config.setdefault("model", ModelMeta.from_text(model_variant))
     args = PipelineArgs(**config)
     pipe = setup_pipeline(args)
-    dims = get_model_dimensions(pipe.config, config["resolution"])
+    if isinstance(config["resolution"], list):
+        dims = {}
+        for resolution in config["resolution"]:
+            dims[resolution] = get_model_dimensions(pipe.config, resolution)
+    else:
+        dims = get_model_dimensions(pipe.config, config["resolution"])
     return pipe, args, dims
