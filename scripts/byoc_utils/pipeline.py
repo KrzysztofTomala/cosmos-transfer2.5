@@ -140,6 +140,16 @@ def setup_pipeline(args: PipelineArgs):
 
 
 def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[ControlVideo2WorldInference, PipelineArgs, Union[ModelDimensions, dict[str, ModelDimensions]]]:
+    
+    checkpoint_base_path = '/opt/nim/workspace/'
+    checkpoint_paths = {
+        "edge": checkpoint_base_path + "general/edge/ecd0ba00-d598-4f94-aa09-e8627899c431_ema_bf16.pt",
+        "depth": checkpoint_base_path + "general/depth/0f214f66-ae98-43cf-ab25-d65d09a7e68f_ema_bf16.pt",
+        "seg": checkpoint_base_path + "general/seg/fcab44fe-6fe7-492e-b9c6-67ef8c1a52ab_ema_bf16.pt",
+        "vis": checkpoint_base_path + "general/blur/20d9fd0b-af4c-4cca-ad0b-f9b45f0805f1_ema_bf16.pt",
+    }
+
+    
     variants = overrides.pop("model_variant")
     if isinstance(variants, list):
         input_file = "optim_dit_args_multicontrol.json"
@@ -157,6 +167,7 @@ def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[Control
     if not isinstance(model_variant, list):
         model_variant = [model_variant]
     config.setdefault("model", ModelMeta.from_text(model_variant))
+    config["checkpoint_paths"] = checkpoint_paths
     args = PipelineArgs(**config)
     pipe = setup_pipeline(args)
     if isinstance(config["resolution"], list):

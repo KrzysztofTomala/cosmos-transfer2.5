@@ -281,11 +281,11 @@ def main(cmdargs) -> str:
         args: dict = json.load(f)
         checkpoint_base_path = '/opt/nim/workspace/'
         args["checkpoint_paths"] = {
-        "edge": args["edge_checkpoint_name"] or checkpoint_base_path + "general/edge/ecd0ba00-d598-4f94-aa09-e8627899c431_ema_bf16.pt",
-        "depth": args["depth_checkpoint_name"] or checkpoint_base_path +  "general/depth/0f214f66-ae98-43cf-ab25-d65d09a7e68f_ema_bf16.pt",
-        "seg": args["seg_checkpoint_name"] or checkpoint_base_path + "general/seg/fcab44fe-6fe7-492e-b9c6-67ef8c1a52ab_ema_bf16.pt",
-        "vis": args["vis_checkpoint_name"] or checkpoint_base_path + "general/blur/20d9fd0b-af4c-4cca-ad0b-f9b45f0805f1_ema_bf16.pt",
-    }
+            "edge": cmdargs.edge_checkpoint_name or checkpoint_base_path + "general/edge/ecd0ba00-d598-4f94-aa09-e8627899c431_ema_bf16.pt",
+            "depth": cmdargs.depth_checkpoint_name or checkpoint_base_path + "general/depth/0f214f66-ae98-43cf-ab25-d65d09a7e68f_ema_bf16.pt",
+            "seg": cmdargs.seg_checkpoint_name or checkpoint_base_path + "general/seg/fcab44fe-6fe7-492e-b9c6-67ef8c1a52ab_ema_bf16.pt",
+            "vis": cmdargs.vis_checkpoint_name or checkpoint_base_path + "general/blur/20d9fd0b-af4c-4cca-ad0b-f9b45f0805f1_ema_bf16.pt",
+        }
         args.update({
             "model": model_meta,
             "output_dir": cmdargs.output_dir,
