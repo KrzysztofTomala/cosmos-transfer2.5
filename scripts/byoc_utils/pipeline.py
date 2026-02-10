@@ -141,7 +141,7 @@ def setup_pipeline(args: PipelineArgs):
 
 def setup_pipeline_from_defaults(overrides: dict | None = None) -> tuple[ControlVideo2WorldInference, PipelineArgs, Union[ModelDimensions, dict[str, ModelDimensions]]]:
     
-    checkpoint_base_path = '/opt/nim/workspace/'
+    checkpoint_base_path = '/opt/nim/workspace/checkpoints/diffusion/torch/'
     checkpoint_paths = {
         "edge": checkpoint_base_path + "general/edge/ecd0ba00-d598-4f94-aa09-e8627899c431_ema_bf16.pt",
         "depth": checkpoint_base_path + "general/depth/0f214f66-ae98-43cf-ab25-d65d09a7e68f_ema_bf16.pt",

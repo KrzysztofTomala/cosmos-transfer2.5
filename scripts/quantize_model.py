@@ -28,8 +28,6 @@ import torch
 import tqdm
 from nimlib import nimutils
 
-model_manifest = (nimutils.get_model_manifest())  # sets nimutils._MODEL_MANIFEST if not yet set
-nimutils.download_models(model_manifest)
 
 from cosmos_transfer2._src.imaginaire.utils import distributed, log
 from cosmos_transfer2._src.transfer2.inference.inference_pipeline import ControlVideo2WorldInference
@@ -279,7 +277,7 @@ def main(cmdargs) -> str:
     input_file = "optim_dit_args_multicontrol.json" if len(model_variant) > 1 else "optim_dit_args.json"
     with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", input_file), "rt") as f:
         args: dict = json.load(f)
-        checkpoint_base_path = '/opt/nim/workspace/'
+        checkpoint_base_path = '/opt/nim/workspace/checkpoints/diffusion/torch/'
         args["checkpoint_paths"] = {
             "edge": cmdargs.edge_checkpoint_name or checkpoint_base_path + "general/edge/ecd0ba00-d598-4f94-aa09-e8627899c431_ema_bf16.pt",
             "depth": cmdargs.depth_checkpoint_name or checkpoint_base_path + "general/depth/0f214f66-ae98-43cf-ab25-d65d09a7e68f_ema_bf16.pt",
