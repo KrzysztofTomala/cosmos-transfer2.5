@@ -68,25 +68,6 @@ def setup_pipeline(args: PipelineArgs):
 
     checkpoint_path = args.checkpoint_paths
 
-
-    # setup_args = SetupArguments.model_validate({
-    #     # Required parameters
-    #     "output_dir": args.output_dir,
-    #     # Optional parameters
-    #     "model": model_key.name,
-    #     "checkpoint_path": checkpoint_path,
-    #     "context_parallel_size": args.num_gpus,
-    #     "disable_guardrails": args.disable_guardrail,
-    #     "offload_guardrail_models": args.offload_guardrail,
-    #     "benchmark": args.benchmark,
-    # })
-
-    # if setup_args.benchmark:
-    #     log.warning(
-    #         "Running in benchmark mode. Each generation will be rerun a couple of times and the average generation "
-    #         "time will be shown."
-    #     )
-
     misc.set_random_seed(seed=args.seed, by_rank=True)
     # Initialize cuDNN.
     torch.backends.cudnn.deterministic = False
@@ -95,6 +76,9 @@ def setup_pipeline(args: PipelineArgs):
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
+    # TODO Use multiple GPUs if possible
+    # I had some problems with multiple GPUs, so now the calibration is done on a single GPU, if we have time
+    # we should try to use multiple GPUs for the calibration
     # Initialize distributed environment for multi-GPU inference
     # if args.num_gpus > 1:
     #     log.info(f"Initializing distributed environment with {args.num_gpus} GPUs for context parallelism")
@@ -121,13 +105,8 @@ def setup_pipeline(args: PipelineArgs):
     registered_exp_name = EXPERIMENTS['multibranch_720p_t24_spaced_layer4_cr1pt1_rectified_flow_inference'].registered_exp_name
     exp_override_opts = EXPERIMENTS['multibranch_720p_t24_spaced_layer4_cr1pt1_rectified_flow_inference'].command_args.copy()
     
-    log.info(f"args.model: {args.model}")
     log.info(f"Initializing ControlVideo2WorldInference for model: {args.model.name}")
     log.info(f"Using batch_hint_keys: {args.model.hint_keys}")
-    # log.info(f"setup_args: {setup_args}")
-    #inference = Control2WorldInference(setup_args, batch_hint_keys=args.model.hint_keys)
-    log.info(f"checkpoint_path: {checkpoint_path}")
-    log.info(f"checkpoint_paths: {[checkpoint_path[i] for i in args.model.hint_keys]}")
 
     inference_pipeline = ControlVideo2WorldInference(
         registered_exp_name=registered_exp_name,
