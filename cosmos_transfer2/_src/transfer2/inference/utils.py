@@ -19,6 +19,7 @@ import os
 import pickle
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 import einops
@@ -206,13 +207,21 @@ def load_from_s3_with_cache(
 
 
 def resize_video(video_np: np.ndarray, h: int, w: int, interpolation: int = INTER_AREA) -> np.ndarray:
-    """Resize video frames to the specified height and width."""
+    """Resize video frames to the specified height and width using parallel processing."""
     video_np = video_np[0].transpose((1, 2, 3, 0))  # Convert to T x H x W x C
     t = video_np.shape[0]
     c = video_np.shape[3]
     resized_video = np.zeros((t, h, w, c), dtype=np.uint8)
-    for i in range(t):
-        resized_video[i] = _resize_frame(video_np[i], w, h, interpolation=interpolation)
+
+    def resize_single_frame(frame_idx: int) -> tuple[int, np.ndarray]:
+        return frame_idx, _resize_frame(video_np[frame_idx], w, h, interpolation=interpolation)
+
+    # Use ThreadPoolExecutor for parallel frame resizing (PIL releases GIL)
+    max_workers = min(t, os.cpu_count() or 8)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for frame_idx, resized_frame in executor.map(resize_single_frame, range(t)):
+            resized_video[frame_idx] = resized_frame
+
     return resized_video.transpose((3, 0, 1, 2))[None]  # Convert back to B x C x T x H x W
 
 
@@ -639,6 +648,7 @@ def read_and_process_control_input(
     resolution: str = "720",
     seg_control_prompt: str | None = None,
     s3_credential_path: str | None = None,
+    preloaded_frames: torch.Tensor | None = None,
 ):
     """
     Load or compute control inputs for video transfer.
@@ -655,6 +665,8 @@ def read_and_process_control_input(
         resolution: Target resolution for processing (e.g., '720', '1080')
         seg_control_prompt: Text prompt for SAM2 segmentation
         s3_credential_path: Path to S3 credentials file
+        preloaded_frames: Optional pre-loaded video frames (C, T, H, W) in [0, 255] range
+                         to avoid re-reading video for depth/seg computation
 
     Returns:
         Dictionary mapping control input keys to tensors (e.g., 'control_input_depth' -> tensor)
@@ -724,21 +736,30 @@ def read_and_process_control_input(
                     )
                     control_input_dict["control_input_seg"] = control_attr
             elif modality == "depth":
-                # Load video at original resolution, compute depth, then resize
-                video_frames, _ = read_video_or_image_into_frames_BCTHW(
-                    video_path,
-                    H=None,
-                    W=None,
-                    normalize=False,
-                    max_frames=-1,
-                    also_return_fps=True,
-                    s3_credential_path=s3_credential_path,
-                )
-                # Convert to (T, H, W, C) format for depth models
-                if isinstance(video_frames, torch.Tensor):
-                    video_np = einops.rearrange(video_frames[0].cpu().numpy(), "c t h w -> t h w c")
+                # Use preloaded frames if available, otherwise load video
+                if preloaded_frames is not None:
+                    log.info("Using preloaded frames for depth computation (avoiding re-read)")
+                    # preloaded_frames is (C, T, H, W) in [0, 255] range
+                    if isinstance(preloaded_frames, torch.Tensor):
+                        video_np = einops.rearrange(preloaded_frames.cpu().numpy(), "c t h w -> t h w c")
+                    else:
+                        video_np = einops.rearrange(preloaded_frames, "c t h w -> t h w c")
                 else:
-                    video_np = einops.rearrange(video_frames[0], "c t h w -> t h w c")
+                    # Load video at original resolution, compute depth, then resize
+                    video_frames, _ = read_video_or_image_into_frames_BCTHW(
+                        video_path,
+                        H=None,
+                        W=None,
+                        normalize=False,
+                        max_frames=-1,
+                        also_return_fps=True,
+                        s3_credential_path=s3_credential_path,
+                    )
+                    # Convert to (T, H, W, C) format for depth models
+                    if isinstance(video_frames, torch.Tensor):
+                        video_np = einops.rearrange(video_frames[0].cpu().numpy(), "c t h w -> t h w c")
+                    else:
+                        video_np = einops.rearrange(video_frames[0], "c t h w -> t h w c")
                 video_np = np.clip(video_np, 0, 255).astype(np.uint8)
 
                 depth_computed = _compute_depth_maps(video_np)
@@ -803,17 +824,31 @@ def reshape_output_video_to_input_resolution(
 
         # Resize this video part to input resolution using resize_video function
         h_out, w_out = [d - (d % 2) for d in input_resl_HW]  # Ensure even dimensions for ffmpeg
-        video_part = uint8_to_normalized_float(
-            torch.from_numpy(
-                resize_video(
-                    normalized_float_to_uint8(video_part).cpu().numpy(),
+
+        torch.cuda.nvtx.range_push('move_video_cpu')
+        cpu_video = normalized_float_to_uint8(video_part).cpu().numpy()
+        torch.cuda.nvtx.range_pop()
+
+        torch.cuda.nvtx.range_push('resize_video')
+        resized_video = resize_video(
+                    cpu_video,
                     h_out,
                     w_out,
                     interpolation=INTER_LANCZOS4,
                 )
-            ).to(device=full_video.device),
+        torch.cuda.nvtx.range_pop()
+
+        torch.cuda.nvtx.range_push('move_video_gpu')
+        gpu_video = torch.from_numpy(resized_video).to(device=full_video.device)
+        torch.cuda.nvtx.range_pop()
+
+        torch.cuda.nvtx.range_push('video_to_float')
+        video_part = uint8_to_normalized_float(
+            gpu_video,
             dtype=full_video.dtype,
         )
+        torch.cuda.nvtx.range_pop()
+
         resized_videos.append(video_part)
 
     # Concatenate all resized videos back horizontally

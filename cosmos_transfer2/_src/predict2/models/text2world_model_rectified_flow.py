@@ -471,18 +471,25 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
 
         The returned function is suitable for use in scenarios where a denoised state is required based on both conditioned and unconditioned inputs, with an adjustable level of guidance influence.
         """
+        torch.cuda.nvtx.range_push("get_velocity_fn_from_batch")
+        torch.cuda.nvtx.range_push("get_data_and_condition")
         _, x0, _ = self.get_data_and_condition(data_batch)  # we need always process the data batch first.
+        torch.cuda.nvtx.range_pop()
         is_image_batch = self.is_image_batch(data_batch)
 
+        torch.cuda.nvtx.range_push("get_condition_uncondition")
         if is_negative_prompt:
             condition, uncondition = self.conditioner.get_condition_with_negative_prompt(data_batch)
         else:
             condition, uncondition = self.conditioner.get_condition_uncondition(data_batch)
+        torch.cuda.nvtx.range_pop()
 
         condition = condition.edit_data_type(DataType.IMAGE if is_image_batch else DataType.VIDEO)
         uncondition = uncondition.edit_data_type(DataType.IMAGE if is_image_batch else DataType.VIDEO)
+        torch.cuda.nvtx.range_push("broadcast_split_for_model_parallelsim")
         _, condition, _, _ = self.broadcast_split_for_model_parallelsim(x0, condition, None, None)
         _, uncondition, _, _ = self.broadcast_split_for_model_parallelsim(x0, uncondition, None, None)
+        torch.cuda.nvtx.range_pop()
 
         # For inference, check if parallel_state is initialized
         if parallel_state.is_initialized():
@@ -493,11 +500,18 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
             )
 
         def velocity_fn(noise: torch.Tensor, noise_x: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
+            torch.cuda.nvtx.range_push("velocity_fn")
+            torch.cuda.nvtx.range_push("denoise_cond")
             cond_v = self.denoise(noise, noise_x, timestep, condition)
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_push("denoise_uncond")
             uncond_v = self.denoise(noise, noise_x, timestep, uncondition)
+            torch.cuda.nvtx.range_pop()
             velocity_pred = uncond_v + guidance * (cond_v - uncond_v)
+            torch.cuda.nvtx.range_pop()
             return velocity_pred
 
+        torch.cuda.nvtx.range_pop()  # get_velocity_fn_from_batch
         return velocity_fn
 
     @torch.no_grad()
@@ -525,6 +539,8 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
             is_negative_prompt (bool): use negative prompt t5 in uncondition if true
             num_steps (int): number of steps for the diffusion process
         """
+        torch.cuda.nvtx.range_push("generate_samples_from_batch_diffusion")
+        torch.cuda.nvtx.range_push("normalize_and_prepare")
         self._normalize_video_databatch_inplace(data_batch)
         self._augment_image_dim_inplace(data_batch)
         is_image_batch = self.is_image_batch(data_batch)
@@ -539,50 +555,69 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
                 _H // self.tokenizer.spatial_compression_factor,
                 _W // self.tokenizer.spatial_compression_factor,
             ]
+        torch.cuda.nvtx.range_pop()
 
+        torch.cuda.nvtx.range_push("generate_noise")
         noise = misc.arch_invariant_rand(
             (n_sample,) + tuple(state_shape),
             torch.float32,
             self.tensor_kwargs["device"],
             seed,
         )
+        torch.cuda.nvtx.range_pop()
 
         seed_g = torch.Generator(device=self.tensor_kwargs["device"])
         seed_g.manual_seed(seed)
 
+        torch.cuda.nvtx.range_push("set_timesteps")
         self.sample_scheduler.set_timesteps(
             num_steps,
             device=self.tensor_kwargs["device"],
             shift=shift,
             use_kerras_sigma=self.config.use_kerras_sigma_at_inference,
         )
+        torch.cuda.nvtx.range_pop()
 
         timesteps = self.sample_scheduler.timesteps
 
         velocity_fn = self.get_velocity_fn_from_batch(data_batch, guidance, is_negative_prompt=is_negative_prompt)
         if self.net.is_context_parallel_enabled:
+            torch.cuda.nvtx.range_push("broadcast_split_noise")
             noise = broadcast_split_tensor(tensor=noise, seq_dim=2, process_group=self.get_context_parallel_group())
+            torch.cuda.nvtx.range_pop()
         latents = noise
 
         if INTERNAL:
             timesteps_iter = timesteps
         else:
             timesteps_iter = tqdm.tqdm(timesteps, desc="Generating samples", total=len(timesteps))
-        for _, t in enumerate(timesteps_iter):
+        torch.cuda.nvtx.range_push("diffusion_loop")
+        for step_idx, t in enumerate(timesteps_iter):
+            torch.cuda.nvtx.range_push(f"diffusion_step_{step_idx}")
             latent_model_input = latents
             timestep = [t]
 
             timestep = torch.stack(timestep)
 
+            torch.cuda.nvtx.range_push("velocity_prediction")
             velocity_pred = velocity_fn(noise, latent_model_input, timestep.unsqueeze(0))
+            torch.cuda.nvtx.range_pop()
+
+            torch.cuda.nvtx.range_push("scheduler_step")
             temp_x0 = self.sample_scheduler.step(
                 velocity_pred.unsqueeze(0), t, latents[0].unsqueeze(0), return_dict=False, generator=seed_g
             )[0]
+            torch.cuda.nvtx.range_pop()
             latents = temp_x0.squeeze(0)
+            torch.cuda.nvtx.range_pop()  # diffusion_step_{step_idx}
+        torch.cuda.nvtx.range_pop()  # diffusion_loop
 
         if self.net.is_context_parallel_enabled:
+            torch.cuda.nvtx.range_push("cat_outputs_cp")
             latents = cat_outputs_cp(latents, seq_dim=2, cp_group=self.get_context_parallel_group())
+            torch.cuda.nvtx.range_pop()
 
+        torch.cuda.nvtx.range_pop()  # generate_samples_from_batch_diffusion
         return latents
 
     @torch.no_grad()
@@ -762,21 +797,29 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
         """
         del noise
 
+        torch.cuda.nvtx.range_push("net_forward")
         net_output_B_C_T_H_W = self.net(
             x_B_C_T_H_W=(xt_B_C_T_H_W).to(**self.tensor_kwargs),  # Eq. 7 of https://arxiv.org/pdf/2206.00364.pdf
             timesteps_B_T=timesteps_B_T,  # Eq. 7 of https://arxiv.org/pdf/2206.00364.pdf
             **condition.to_dict(),
         ).float()
+        torch.cuda.nvtx.range_pop()
 
         return net_output_B_C_T_H_W
 
     @torch.no_grad()
     def encode(self, state: torch.Tensor) -> torch.Tensor:
-        return self.tokenizer.encode(state)
+        torch.cuda.nvtx.range_push("tokenizer_encode")
+        result = self.tokenizer.encode(state)
+        torch.cuda.nvtx.range_pop()
+        return result
 
     @torch.no_grad()
     def decode(self, latent: torch.Tensor) -> torch.Tensor:
-        return self.tokenizer.decode(latent)
+        torch.cuda.nvtx.range_push("tokenizer_decode")
+        result = self.tokenizer.decode(latent)
+        torch.cuda.nvtx.range_pop()
+        return result
 
     def get_video_height_width(self) -> Tuple[int, int]:
         return VIDEO_RES_SIZE_INFO[self.config.resolution]["9,16"]
