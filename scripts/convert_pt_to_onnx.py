@@ -38,11 +38,11 @@ def make_parser():
                         help="Model variant(s) to use for control-video-to-world generation. "
                              "Provide single variant (e.g., edge) for single control, "
                              "or multiple variants (e.g., edge vis depth seg) for multicontrol mode.")
-    parser.add_argument("--modelopt_checkpoint", type=str, required=True, help="Path to ModelOPT-quantized checkpoint.")
+    parser.add_argument("--modelopt_checkpoint", type=str, default=None, help="Path to ModelOPT-quantized checkpoint.")
     parser.add_argument("--controls_only", action="store_true", help="Export control layers only (skip base layers).")
     parser.add_argument("--output_dir", type=str, default="output", help="Folder to export ONNX files to.")
-    parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
-                        help="Quantization mode (FP8 or NVFP4)")
+    parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()) + ["BF16"], default="FP8",
+                        help="Quantization mode (FP8 or NVFP4 or BF16)")
     parser.add_argument("--resolution", choices=["480", "720"], default="720", type=str,
                         help="Resolution of the model to use for video-to-world generation")
     return parser
@@ -54,8 +54,9 @@ def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmd
     fuse_qkv_projections(dit_controlnet, model.is_multicontrol)
 
     # ModelOPT quantization schema
-    assert os.path.exists(cmdargs.modelopt_checkpoint), "ModelOPT-quantized checkpoint not found"
-    mto.restore(dit_controlnet, cmdargs.modelopt_checkpoint)
+    if cmdargs.mode != "BF16":
+        assert os.path.exists(cmdargs.modelopt_checkpoint), "ModelOPT-quantized checkpoint not found"
+        mto.restore(dit_controlnet, cmdargs.modelopt_checkpoint)
 
     dummy_tensors = make_dummy_tensors(dims)
 
