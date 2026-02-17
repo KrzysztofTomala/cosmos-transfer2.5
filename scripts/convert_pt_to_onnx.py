@@ -15,6 +15,7 @@
 
 import argparse
 import os
+import json
 
 import modelopt.torch.opt as mto
 import torch
@@ -27,7 +28,9 @@ from cosmos_transfer2._src.transfer2.networks.minimal_v4_lvg_dit_control_vace im
 )
 from scripts.byoc_utils.block import BlockMeta
 from scripts.byoc_utils.model import ModelDimensions, make_dummy_tensors, fuse_qkv_projections
-from scripts.byoc_utils.pipeline import setup_pipeline_from_defaults
+from scripts.byoc_utils.pipeline import PipelineArgs, setup_pipeline
+from scripts.byoc_utils.model import ASSETS_ROOT, SCRIPTS_ROOT, VARIANTS, fuse_qkv_projections, get_model_dimensions
+
 from scripts.quantize_model import QUANTIZATION_MODES, VARIANTS, ModelMeta
 
 
@@ -38,13 +41,26 @@ def make_parser():
                         help="Model variant(s) to use for control-video-to-world generation. "
                              "Provide single variant (e.g., edge) for single control, "
                              "or multiple variants (e.g., edge vis depth seg) for multicontrol mode.")
-    parser.add_argument("--modelopt_checkpoint", type=str, required=True, help="Path to ModelOPT-quantized checkpoint.")
+    parser.add_argument("--modelopt_checkpoint", type=str, default=None, help="Path to ModelOPT-quantized checkpoint.")
     parser.add_argument("--controls_only", action="store_true", help="Export control layers only (skip base layers).")
     parser.add_argument("--output_dir", type=str, default="output", help="Folder to export ONNX files to.")
-    parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
-                        help="Quantization mode (FP8 or NVFP4)")
+    parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()) + ["BF16"], default="FP8",
+                        help="Quantization mode (FP8 or NVFP4 or BF16)")
     parser.add_argument("--resolution", choices=["480", "720"], default="720", type=str,
                         help="Resolution of the model to use for video-to-world generation")
+    parser.add_argument("--edge_checkpoint_name", type=str, default="",
+                        help="Optionally override checkpoint filename (`*.pt`) to load for edge control. Defaults to the"
+                             " registered post-trained checkpoint.")
+    parser.add_argument("--depth_checkpoint_name", type=str, default="",
+                        help="Optionally override checkpoint filename (`*.pt`) to load for depth control. Defaults to the"
+                             " registered post-trained checkpoint.")
+    parser.add_argument("--seg_checkpoint_name", type=str, default="",
+                        help="Optionally override checkpoint filename (`*.pt`) to load for seg control. Defaults to the"
+                             " registered post-trained checkpoint.")
+    parser.add_argument("--vis_checkpoint_name", type=str, default="",
+                        help="Optionally override checkpoint filename (`*.pt`) to load for vis control. Defaults to the"
+                             " registered post-trained checkpoint.")
+
     return parser
 
 
@@ -54,8 +70,9 @@ def export_dit_onnx(model: ModelMeta, dims: ModelDimensions, dit_controlnet, cmd
     fuse_qkv_projections(dit_controlnet, model.is_multicontrol)
 
     # ModelOPT quantization schema
-    assert os.path.exists(cmdargs.modelopt_checkpoint), "ModelOPT-quantized checkpoint not found"
-    mto.restore(dit_controlnet, cmdargs.modelopt_checkpoint)
+    if cmdargs.mode != "BF16":
+        assert os.path.exists(cmdargs.modelopt_checkpoint), "ModelOPT-quantized checkpoint not found"
+        mto.restore(dit_controlnet, cmdargs.modelopt_checkpoint)
 
     dummy_tensors = make_dummy_tensors(dims)
 
@@ -131,16 +148,36 @@ def export_block_as_onnx(
 
 
 def main(cmdargs) -> str:
-    pipe, args, dims = setup_pipeline_from_defaults({
-        "model_variant": cmdargs.model_variant,
-        "output_dir": cmdargs.output_dir,
-        "resolution": cmdargs.resolution,
-        "disable_guardrail": True,
-    })
-    dit_controlnet = pipe.model.net
-    del pipe
+    model_variant = cmdargs.model_variant if isinstance(cmdargs.model_variant, list) else [cmdargs.model_variant]
+    model_meta = ModelMeta.from_text(model_variant)
 
-    onnx_dir = export_dit_onnx(args.model, dims, dit_controlnet, cmdargs)
+    input_file = "optim_dit_args_multicontrol.json" if len(cmdargs.model_variant) > 1 else "optim_dit_args.json"
+
+    with open(os.path.join(SCRIPTS_ROOT, "byoc_utils", input_file), "rt") as f:
+        args: dict = json.load(f)
+        checkpoint_base_path = '/opt/nim/workspace/checkpoints/diffusion/torch/'
+        args["checkpoint_paths"] = {
+            "edge": cmdargs.edge_checkpoint_name or checkpoint_base_path + "general/edge/ecd0ba00-d598-4f94-aa09-e8627899c431_ema_bf16.pt",
+            "depth": cmdargs.depth_checkpoint_name or checkpoint_base_path + "general/depth/0f214f66-ae98-43cf-ab25-d65d09a7e68f_ema_bf16.pt",
+            "seg": cmdargs.seg_checkpoint_name or checkpoint_base_path + "general/seg/fcab44fe-6fe7-492e-b9c6-67ef8c1a52ab_ema_bf16.pt",
+            "vis": cmdargs.vis_checkpoint_name or checkpoint_base_path + "general/blur/20d9fd0b-af4c-4cca-ad0b-f9b45f0805f1_ema_bf16.pt",
+        }
+        args.update({
+            "model": model_meta,
+            "output_dir": cmdargs.output_dir,
+            "disable_guardrail": True,
+            "resolution": cmdargs.resolution,
+        })
+
+    pipeline_args = PipelineArgs(**args)
+    pipe = setup_pipeline(pipeline_args)
+    dit_controlnet = pipe.model.net
+    dims = get_model_dimensions(pipe.config, args["resolution"])
+
+    del pipe
+    
+
+    onnx_dir = export_dit_onnx(args['model'], dims, dit_controlnet, cmdargs)
     return onnx_dir
 
 

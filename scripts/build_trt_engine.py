@@ -51,8 +51,8 @@ def make_parser():
                              "for multiprofile mode (e.g., 480 720).")
     parser.add_argument("--output_dir", type=str, default="output",
                         help="Working directory of where to retrieve ONNX files from and export TRT engines to.")
-    parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys()), default="FP8",
-                        help="Quantization mode (FP8 or NVFP4)")
+    parser.add_argument("--mode", type=str, choices=list(QUANTIZATION_MODES.keys())+["BF16"], default="FP8",
+                        help="Quantization mode (FP8 or NVFP4 or BF16)")
     parser.add_argument("-O", dest="optimization_level", type=int, default=3, help="TRT optimization level")
     parser.add_argument("--controls_only", action="store_true", help="Build for control layers only (skip base layers).")
     parser.add_argument("--skip_testrun", action="store_true", help="Skip testrun")
