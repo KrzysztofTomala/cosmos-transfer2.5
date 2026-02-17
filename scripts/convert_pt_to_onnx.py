@@ -166,18 +166,13 @@ def main(cmdargs) -> str:
             "model": model_meta,
             "output_dir": cmdargs.output_dir,
             "disable_guardrail": True,
+            "resolution": cmdargs.resolution,
         })
 
     pipeline_args = PipelineArgs(**args)
     pipe = setup_pipeline(pipeline_args)
     dit_controlnet = pipe.model.net
-
-    if isinstance(args["resolution"], list):
-        dims = {}
-        for resolution in args["resolution"]:
-            dims[resolution] = get_model_dimensions(pipe.config, resolution)
-    else:
-        dims = get_model_dimensions(pipe.config, args["resolution"])
+    dims = get_model_dimensions(pipe.config, args["resolution"])
 
     del pipe
     
