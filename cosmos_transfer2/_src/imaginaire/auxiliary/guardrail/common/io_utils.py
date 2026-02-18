@@ -67,10 +67,26 @@ def read_video(filepath: str) -> VideoData:
 
 
 def save_video(filepath: str, frames: np.ndarray, fps: int) -> None:
-    """Save a video file from a sequence of frames."""
+    """Save a video file from a sequence of frames using VP9 codec for NIMS compatibility."""
     try:
-        writer = imageio.get_writer(filepath, fps=fps, macro_block_size=1)
+        writer = imageio.get_writer(
+            filepath,
+            fps=fps,
+            codec='libvpx-vp9',
+            quality=None,
+            bitrate=0,
+            output_params=[
+                '-f', 'mp4',
+                '-crf', '30',  # Quality setting (0-63, lower is better quality)
+                '-deadline', 'realtime',  # Optimize for real-time encoding
+                '-cpu-used', '4',  # Speed/quality tradeoff (0-8, higher is faster)
+                '-row-mt', '1',  # Enable row-based multi-threading
+            ]
+        )
         for frame in frames:
+            # Handle single channel frames by repeating across 3 channels
+            if len(frame.shape) == 2:
+                frame = frame[:, :, None].repeat(3, axis=2)
             writer.append_data(frame)
     except Exception as e:
         raise ValueError(f"Failed to save video file to {filepath}") from e

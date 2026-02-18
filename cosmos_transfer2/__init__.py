@@ -29,4 +29,4 @@ def _check_cuda_extra():
         )
 
 
-_check_cuda_extra()
+# _check_cuda_extra()

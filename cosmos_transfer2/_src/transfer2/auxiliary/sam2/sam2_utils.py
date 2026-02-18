@@ -16,11 +16,11 @@
 import os
 import time
 
-import cv2
 import imageio
 import numpy as np
 import pycocotools.mask
 import torch
+from imageio_ffmpeg import read_frames
 from natsort import natsorted
 from PIL import Image
 from torchvision import transforms
@@ -34,8 +34,22 @@ from cosmos_transfer2._src.transfer2.datasets.augmentors.seg import (
 def write_video(frames, output_path, fps=30):
     """
     expects a sequence of [H, W, 3] or [H, W] frames
+    Uses VP9 codec for compatibility with NIMS
     """
-    with imageio.get_writer(output_path, fps=fps, macro_block_size=8) as writer:
+    with imageio.get_writer(
+        output_path,
+        fps=fps,
+        codec='libvpx-vp9',
+        quality=None,
+        bitrate=0,
+        output_params=[
+            '-f', 'mp4',
+            '-crf', '30',  # Quality setting (0-63, lower is better quality)
+            '-deadline', 'realtime',  # Optimize for real-time encoding
+            '-cpu-used', '4',  # Speed/quality tradeoff (0-8, higher is faster)
+            '-row-mt', '1',  # Enable row-based multi-threading
+        ]
+    ) as writer:
         for frame in frames:
             if len(frame.shape) == 2:  # single channel
                 frame = frame[:, :, None].repeat(3, axis=2)
@@ -43,14 +57,18 @@ def write_video(frames, output_path, fps=30):
 
 
 def capture_fps(input_video_path: str):
-    cap = cv2.VideoCapture(input_video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    """Get FPS from video file using imageio_ffmpeg."""
+    reader = read_frames(input_video_path)
+    meta = next(reader)  # Get metadata
+    fps = meta['fps']
+    reader.close()
     return fps
 
 
 def video_to_frames(input_loc, output_loc):
     """Function to extract frames from input video file
     and save them as separate frames in an output directory.
+    Uses imageio_ffmpeg for video reading and PIL for image saving.
     Args:
         input_loc: Input video file.
         output_loc: Output directory to save the frames.
@@ -63,29 +81,24 @@ def video_to_frames(input_loc, output_loc):
         pass
     # Log the time
     time_start = time.time()
-    # Start capturing the feed
-    cap = cv2.VideoCapture(input_loc)
-    # Find the number of frames
-    video_length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(f"Number of frames: {video_length}")
-    count = 0
+    # Load video using imageio_ffmpeg
+    reader = read_frames(input_loc)
+    meta = next(reader)  # Get metadata
+    width, height = meta['size']
+    print(f"Video size: {width}x{height}")
     print("Converting video..\n")
-    # Start converting the video
-    while cap.isOpened():
-        # Extract the frame
-        ret, frame = cap.read()
-        if not ret:
-            break
-        # Write the results back to output location.
-        cv2.imwrite(output_loc + "/%#05d.jpg" % (count + 1), frame)
-        count = count + 1
-        # If there are no more frames left
-        if count > (video_length - 1):
-            break
+    # Extract and save all frames
+    count = 0
+    for frame_bytes in reader:
+        # Convert raw bytes to numpy array (RGB format)
+        frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((height, width, 3))
+        # Save frame using PIL
+        img = Image.fromarray(frame)
+        img.save(output_loc + "/%#05d.jpg" % (count + 1), quality=95)
+        count += 1
+    reader.close()
     # Log the time again
     time_end = time.time()
-    # Release the feed
-    cap.release()
     # Print stats
     print("Done extracting frames.\n%d frames extracted" % count)
     print("It took %d seconds for conversion." % (time_end - time_start))

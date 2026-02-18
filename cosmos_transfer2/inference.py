@@ -32,7 +32,7 @@ from cosmos_transfer2.config import (
     ModelKey,
     SetupArguments,
     is_rank0,
-    path_to_str,
+    path_to_str, ModelVariant,
 )
 
 
@@ -40,18 +40,19 @@ class Control2WorldInference:
     def __init__(
         self,
         args: SetupArguments,
-        batch_hint_keys: list[str],
+        batch_hint_keys: list[str | ModelVariant],
     ) -> None:
         log.debug(f"{args.__class__.__name__}({args})({batch_hint_keys})")
         self.setup_args = args
-        self.batch_hint_keys = batch_hint_keys
+        assert batch_hint_keys, "Must specify at least one control modality in `batch_hint_keys`."
+        self.batch_hint_keys = [ModelVariant(hint) for hint in batch_hint_keys]
         self.is_distilled = args.model_key.distilled
 
         # Get checkpoint paths - same pattern for distilled and non-distilled
         if len(self.batch_hint_keys) == 1:
             # pyrefly: ignore  # bad-argument-type
             checkpoint = MODEL_CHECKPOINTS[ModelKey(variant=self.batch_hint_keys[0], distilled=self.is_distilled)]
-            self.checkpoint_list = [checkpoint.path]
+            self.checkpoint_list = [args.checkpoint_path or checkpoint.path]
             self.experiment = checkpoint.experiment
         else:
             # Multi-control: use checkpoints for each hint key

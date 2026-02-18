@@ -15,11 +15,14 @@
 
 import collections
 import math
+import gc
+import os
 from collections import namedtuple
-from collections.abc import Sequence
+from collections.abc import Sequence, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Tuple, Union
+from copy import deepcopy
 
 from cosmos_transfer2._src.predict2.utils.kv_cache import AttentionOpWithKVCache, KVCacheConfig
 
@@ -33,6 +36,7 @@ except ImportError:
 import numpy as np
 import torch
 import torch.amp as amp
+import torch.nn.functional as F
 import transformer_engine as te
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
@@ -263,6 +267,19 @@ class GPT2FeedForward(nn.Module):
         x = self.layer2(x)
         return x
 
+class MultiheadAttentionBSHDOp(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx,
+                q, k, v):
+        q_t = q.transpose(1, 2) # B H S D
+        k_t = k.transpose(1, 2) # B H S D
+        v_t = v.transpose(1, 2) # B H S D
+        return F.scaled_dot_product_attention(q_t, k_t, v_t).transpose(1, 2).flatten(-2) # B S (H D)
+
+    @staticmethod
+    def symbolic(g, q, k, v):
+        return g.op("Cosmos::MultiheadAttention", q, k, v)
+
 
 def torch_attention_op(
     q_B_S_H_D: torch.Tensor,
@@ -286,6 +303,12 @@ def torch_attention_op(
         return rearrange(result_B_H_S_D, "b h s d -> b s (h d)")
     else:
         return rearrange(result_B_H_S_D, "b h s d -> b s h d")
+
+
+def torch_attention_op_bshd(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D):
+    """TRT-exportable bshd attention via MultiheadAttentionBSHDOp."""
+    result_B_S_HD = MultiheadAttentionBSHDOp.apply(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D)
+    return result_B_S_HD
 
 
 def flex_attention_op(
@@ -385,6 +408,127 @@ def i4_attention_op(
         return out_B_S_H_D
 
 
+def torch_attention_op_sbhd(q_S_B_H_D, k_S_B_H_D, v_S_B_H_D):
+    """Computes multi-head attention using PyTorch's native implementation.
+
+    This function provides a PyTorch backend alternative to Transformer Engine's attention operation. It assumes input
+    tensors follow the "sbhd" format. It then rearranges the input tensors to match PyTorch's expected format ("bhsd"),
+    computes scaled dot-product attention, and rearranges the output back to the original format.
+
+    The input tensor names use the following dimension conventions:
+
+    - B: batch size
+    - S: sequence length
+    - H: number of attention heads
+    - D: head dimension
+
+    Args:
+        q_S_B_H_D: Query tensor with shape (seq_len, batch, n_heads, head_dim)
+        k_S_B_H_D: Key tensor with shape (seq_len, batch, n_heads, head_dim)
+        v_S_B_H_D: Value tensor with shape (seq_len, batch, n_heads, head_dim)
+
+    Returns:
+        Attention output tensor with shape (seq_len, batch, n_heads * head_dim)
+    """
+    # Enforce PyTorch's expected shape
+    q_B_S_H_D = q_S_B_H_D.transpose(0, 1)
+    k_B_S_H_D = k_S_B_H_D.transpose(0, 1)
+    v_B_S_H_D = v_S_B_H_D.transpose(0, 1)
+
+    result_S_B_HD = torch_attention_op_bshd(q_B_S_H_D, k_B_S_H_D, v_B_S_H_D).transpose(0, 1)
+    return result_S_B_HD
+
+
+def torch_attention_op_bhsd(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D):
+    """Computes multi-head attention using PyTorch's native implementation.
+
+    This function provides a PyTorch backend alternative to Transformer Engine's attention operation. Assumes input
+    tensors match PyTorch's expected format ("bhsd") when computing scaled dot-product attention.
+
+    The input tensor names use the following dimension conventions:
+
+    - B: batch size
+    - S: sequence length
+    - H: number of attention heads
+    - D: head dimension
+
+    Args:
+        q_B_H_S_D: Query tensor with shape (batch, n_heads, seq_len, head_dim)
+        k_B_H_S_D: Key tensor with shape (batch, n_heads, seq_len, head_dim)
+        v_B_H_S_D: Value tensor with shape (batch, n_heads, seq_len, head_dim)
+
+    Returns:
+        Attention output tensor with shape (batch, n_heads, seq_len * head_dim)
+    """
+    return F.scaled_dot_product_attention(q_B_H_S_D, k_B_H_S_D, v_B_H_S_D).flatten(-2)  # result_B_H_SD
+
+
+TORCH_ATTENTION_OP_MAP = {  # QKV format -> op
+    "bshd": torch_attention_op_bshd,
+    "sbhd": torch_attention_op_sbhd,
+    "bhsd": torch_attention_op_bhsd,
+}
+
+
+class ExportableAttention(torch.nn.Module):
+    def __init__(self, qkv_format: str, is_selfattn: bool):
+        super().__init__()
+        attn_op_map = deepcopy(TORCH_ATTENTION_OP_MAP)
+        if is_selfattn:
+            del attn_op_map['bhsd'] # HND support removed for selfattn. CP will break
+
+        assert qkv_format in TORCH_ATTENTION_OP_MAP, \
+            f"TRTLLM-exportable Attention only supports {TORCH_ATTENTION_OP_MAP.keys()} QKV formats."
+        self.qkv_format = qkv_format
+        self.op = TORCH_ATTENTION_OP_MAP[qkv_format]
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, **kwargs):
+        return self.op(q, k, v)
+
+
+def torch_rope_emb(
+    t: torch.Tensor,
+    freqs: torch.Tensor,
+    tensor_format: str = "sbhd",
+) -> torch.Tensor:
+    """
+    Apply RoPE to the full sequence
+    t & freqs' dimensions must match
+    """
+
+    # [seq, 1, 1, dim] -> [1, seq, 1, dim] or
+    # [seq, b, 1, dim] -> [b, seq, 1, dim]
+    if tensor_format == "bshd":
+        freqs = freqs.transpose(0, 1)
+    # cos/sin first then dtype conversion for better precision
+    cos_ = torch.cos(freqs).to(t.dtype)
+    sin_ = torch.sin(freqs).to(t.dtype)
+
+    def _rotate_half(x: torch.Tensor, interleaved: bool) -> torch.Tensor:
+        """Change sign so the last dimension becomes [-odd, +even]
+
+        Args:
+            x: torch.Tensor. Input tensor.
+            interleaved: bool. Whether to use interleaved rotary position embedding.
+
+        Returns:
+            Tensor: Tensor rotated half.
+        """
+        if not interleaved:
+            x1, x2 = torch.chunk(x, 2, dim=-1)
+            return torch.cat((-x2, x1), dim=-1)
+
+        # interleaved
+        x1 = x[:, :, :, ::2]
+        x2 = x[:, :, :, 1::2]
+        x_new = torch.stack((-x2, x1), dim=-1)
+        return x_new.view(x_new.shape[0], x_new.shape[1], x_new.shape[2], -1)
+
+    # first part is cosine component
+    # second part is sine component, need to change signs with _rotate_half method
+    return (t * cos_) + (_rotate_half(t, interleaved=False) * sin_)
+
+
 class Attention(nn.Module):
     """
     A flexible attention module supporting both self-attention and cross-attention mechanisms.
@@ -459,8 +603,13 @@ class Attention(nn.Module):
         self.v_proj = nn.Linear(context_dim, inner_dim, bias=False)
         self.v_norm = nn.Identity()
 
+        self._fused_qkv = False
+        self._exportable = False
+
         self.output_proj = nn.Linear(inner_dim, query_dim, bias=False)
         self.output_dropout = nn.Dropout(dropout) if dropout > 1e-4 else nn.Identity()
+
+        self.rope_fn = lambda t, freq: apply_rotary_pos_emb(t, freq, tensor_format=self.qkv_format, fused=True)
 
         if self.backend == "transformer_engine":
             from transformer_engine.pytorch.attention import DotProductAttention
@@ -509,13 +658,72 @@ class Attention(nn.Module):
             if hasattr(layer, "reset_parameters"):
                 layer.reset_parameters()
 
+    def _exportable_attention(self):
+        self.attn_op = ExportableAttention(self.qkv_format, self.is_selfattn)
+        self.backend = "torch"
+
+    def _exportable_norm(self):
+        q_norm = RMSNorm(self.head_dim, eps=1e-6)
+        k_norm = RMSNorm(self.head_dim, eps=1e-6)
+        with torch.no_grad():
+            q_norm.to(self.q_norm.weight.device)
+            q_norm.to(self.q_norm.weight.dtype)
+            k_norm.to(self.k_norm.weight.device)
+            k_norm.to(self.k_norm.weight.dtype)
+            q_norm.weight.copy_(self.q_norm.weight)
+            k_norm.weight.copy_(self.k_norm.weight)
+        del self.q_norm
+        del self.k_norm
+        self.q_norm = q_norm
+        self.k_norm = k_norm
+
+    def _exportable_rope(self):
+        self.rope_fn = lambda t, freq: torch_rope_emb(t, freq, tensor_format=self.qkv_format)
+
+    def prepare_for_export(self, attention: bool = True, norm: bool = True, rope: bool = True):
+        """Prepare module for export onto platforms that may not support non-pytorch implementations, (e.g. TRT)"""
+        if self._exportable:
+            return
+        if attention:
+            self._exportable_attention()
+        if norm:
+            self._exportable_norm()
+        if rope:
+            self._exportable_rope()
+        self._exportable = True
+
+    def fuse_qkv_proj(self) -> None:
+        if self._fused_qkv:
+            return
+        assert self.is_selfattn, "Only self-attention supports fusing QKV"
+        assert self.q_proj.bias is None, "QKV proj bias is not supported"
+        assert self.k_proj.bias is None, "QKV proj bias is not supported"
+        assert self.v_proj.bias is None, "QKV proj bias is not supported"
+        qkv_proj = nn.Linear(self.query_dim, self._inner_dim * 3, bias=False)
+        qkv_proj.load_state_dict({
+            'weight': torch.cat([self.q_proj.weight, self.k_proj.weight, self.v_proj.weight], dim=0),
+        })
+        qkv_proj.to(self.q_proj.weight.device)
+        qkv_proj.to(self.q_proj.weight.dtype)
+        del self.q_proj
+        del self.k_proj
+        del self.v_proj
+        self.q_proj = qkv_proj
+        self._fused_qkv = True
+
     def compute_qkv(self, x, context=None, rope_emb=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         q = self.q_proj(x)
-        context = x if context is None else context
-        k = self.k_proj(context)
-        v = self.v_proj(context)
+        if self._fused_qkv:
+            qkv = q.unflatten(-1, (3, self._inner_dim))
+            q = qkv[..., 0, :]
+            k = qkv[..., 1, :]
+            v = qkv[..., 2, :]
+        else:
+            context = x if context is None else context
+            k = self.k_proj(context)
+            v = self.v_proj(context)
         q, k, v = map(
-            lambda t: rearrange(t, "b ... (h d) -> b ... h d", h=self.n_heads, d=self.head_dim),
+            lambda t: t.unflatten(-1, (self.n_heads, self.head_dim)),  # "b ... (h d) -> b ... h d"
             (q, k, v),
         )
 
@@ -528,11 +736,15 @@ class Attention(nn.Module):
                 if self.use_wan_fp32_strategy:  # wan will force q and k to fp32 before rotary pos emb
                     q = q.to(torch.float32)
                     k = k.to(torch.float32)
-                q = apply_rotary_pos_emb(q, rope_emb, tensor_format=self.qkv_format, fused=True)
-                k = apply_rotary_pos_emb(k, rope_emb, tensor_format=self.qkv_format, fused=True)
+                q = self.rope_fn(q, rope_emb)
+                k = self.rope_fn(k, rope_emb)
                 if self.use_wan_fp32_strategy:
-                    q = q.to(original_dtype)
-                    k = k.to(original_dtype)
+                    if self._exportable:
+                        q = q.to(v.dtype)
+                        k = k.to(v.dtype)
+                    else:
+                        q = q.to(original_dtype)
+                        k = k.to(original_dtype)
             return q, k, v
 
         q, k, v = apply_norm_and_rotary_pos_emb(q, k, v, rope_emb)
@@ -1708,6 +1920,90 @@ class MiniTrainDIT(WeightTrainingStat):
             t=self.patch_temporal,
         )
         return x_B_C_Tt_Hp_Wp
+
+    class TensorRTBlock(torch.nn.Module):
+        def __init__(self, engine_path: str):
+            super().__init__()
+
+            import packages._trt_plugins as trt_inference
+            import tensorrt as trt
+
+            # Load engine
+            with open(engine_path, "rb") as f:
+                engine_serialized = f.read()
+            self.trt_stream = trt_inference.trt_stream
+            self.pyt_stream = trt_inference.pyt_stream
+            self.engine = trt_inference.trt_runtime.deserialize_cuda_engine(engine_serialized)
+            self.context = trt_inference.create_execution_context_from_pool(self.engine)
+            self.context_set_input = lambda name, tensor: trt_inference.trt_set_tensor_check(self.context, name, tensor, check_shape=True)
+            self.context_set_output = lambda tensor: trt_inference.trt_set_tensor_check(self.context, 'output', tensor, check_shape=False)
+            self.context_get_output_dtype = lambda : trt_inference.trt_get_tensor_dtype('output')
+            log.info(f"TRT engine loaded: {engine_path}")
+
+            # Compatibility hack
+            self.self_attn = MiniTrainDIT.TensorRTBlock.ContextParallelSetter(self)
+            self.self_attn.set_context_parallel_group(process_group=None, ranks=[0], stream=torch.cuda.current_stream())
+
+        class ContextParallelSetter:
+            def __init__(self, block):
+                self.block = block
+
+            def set_context_parallel_group(self, *args, **kwargs):
+                return self.block.set_context_parallel_group(*args, **kwargs)
+
+        def set_context_parallel_group(
+            self, process_group: ProcessGroup|None, ranks: Sequence[int], stream: torch.cuda.Stream
+        ):
+            from packages._trt_plugins import context_registry
+            if process_group is not None:
+                context_registry.set_cp_procgrp(ranks, process_group)
+                context_registry.set_loc_cp_ranks(ranks)
+            else:
+                context_registry.set_loc_cp_ranks([])
+
+        def forward(
+            self,
+            x_B_T_H_W_D: torch.Tensor,
+            t_embedding_B_T_D: torch.Tensor,
+            crossattn_emb: torch.Tensor,
+            **kwargs: Mapping,
+        ) -> torch.Tensor:
+
+            B, T, H, W, _ = x_B_T_H_W_D.shape
+
+            # Treat rope_emb_L_1_1_D as requried
+            rope_emb_L_1_1_D = kwargs.pop('rope_emb_L_1_1_D')
+            rope_emb_T_H_W_1_1_D = rope_emb_L_1_1_D.unflatten(0, (T, H, W))
+            out_B_T_H_W_D = torch.empty_like(x_B_T_H_W_D)
+
+            self.context_set_input('x_B_T_H_W_D', x_B_T_H_W_D)
+            self.context_set_input('emb_B_T_D', t_embedding_B_T_D)
+            self.context_set_input('crossattn_emb', crossattn_emb)
+            self.context_set_input('rope_emb_T_H_W_1_1_D', rope_emb_T_H_W_1_1_D)
+            for name, tensor in kwargs.items():
+                if tensor is not None:
+                    self.context_set_input(name, tensor)
+            self.context_set_output(out_B_T_H_W_D)
+
+            self.trt_stream.wait_stream(self.pyt_stream)
+            self.context.execute_async_v3(self.trt_stream.cuda_stream)
+            self.pyt_stream.wait_stream(self.trt_stream)
+
+            return out_B_T_H_W_D
+
+        def set_optimization_profile(self, profile: int):
+            assert profile < self.engine.num_optimization_profiles, f"Profile {profile} out of range"
+            if not self.context.set_optimization_profile_async(profile, self.pyt_stream.cuda_stream):
+                raise RuntimeError(f"Failed to set optimization profile {profile}")
+            
+    def load_trt(self, block_file_map: dict[str, str]):
+        # Load TRT for base blocks
+        for iblock in range(len(self.blocks)):
+            self.blocks[iblock] = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            trt_engine_file = block_file_map[f"cosmos_transfer2.5_net_block{iblock}"]
+            self.blocks[iblock] = MiniTrainDIT.TensorRTBlock(trt_engine_file)
 
     def forward(
         self,

@@ -93,13 +93,11 @@ class CheckpointFileHf(_CheckpointHf):
     @override
     def _download(self) -> str:
         """Download checkpoint and return the local path."""
-        download_kwargs = dict(
-            repo_id=self.repository, repo_type="model", revision=self.revision, filename=self.filename
+        raise RuntimeError(
+            f"Hugging Face downloads are disabled. "
+            f"Cannot download {self.filename} from {self.repository}@{self.revision}. "
+            f"Please ensure all required checkpoints are available in NGC workspace."
         )
-        log.info(f"Downloading checkpoint file from Hugging Face with {download_kwargs}")
-        path = hf_hub_download(**download_kwargs)
-        assert os.path.exists(path), path
-        return path
 
 
 class CheckpointDirHf(_CheckpointHf):
@@ -121,22 +119,12 @@ class CheckpointDirHf(_CheckpointHf):
     @override
     def _download(self) -> str:
         """Download checkpoint and return the local path."""
-        patterns: dict[str, list[str]] = {}
-        if self.include:
-            patterns["allow_patterns"] = list(self.include)
-        else:
-            patterns["allow_patterns"] = ["*"]
-        if self.exclude:
-            patterns["ignore_patterns"] = list(self.exclude)
-        if self.subdirectory:
-            patterns = {key: [os.path.join(self.subdirectory, x) for x in val] for key, val in patterns.items()}
-        download_kwargs = dict(repo_id=self.repository, repo_type="model", revision=self.revision) | patterns
-        log.info(f"Downloading checkpoint from Hugging Face with {download_kwargs}")
-        path = snapshot_download(**download_kwargs)
-        if self.subdirectory:
-            path = os.path.join(path, self.subdirectory)
-        assert os.path.exists(path), path
-        return path
+        raise RuntimeError(
+            f"Hugging Face downloads are disabled. "
+            f"Cannot download directory from {self.repository}@{self.revision}"
+            f"{f' (subdirectory: {self.subdirectory})' if self.subdirectory else ''}. "
+            f"Please ensure all required checkpoints are available in NGC workspace."
+        )
 
 
 CheckpointHf: TypeAlias = CheckpointFileHf | CheckpointDirHf
@@ -178,6 +166,49 @@ class CheckpointConfig(pydantic.BaseModel):
         """Return S3 URI or local path."""
         if INTERNAL and self.s3 is not None:
             return self.s3.uri
+        # Check NGC workspace first (for NIM deployments)
+        ngc_workspace = os.environ.get("NIM_WORKSPACE", "/opt/nim/workspace")
+
+        # Check if there's a checkpoint mapping via environment variable first
+        # Format: CHECKPOINT_{UUID}=/path/to/checkpoint
+        env_var_name = f"CHECKPOINT_{self.uuid.replace('-', '_').upper()}"
+        env_path = os.environ.get(env_var_name)
+        if env_path and os.path.exists(env_path):
+            return env_path
+
+        # Determine if this is a file or directory checkpoint
+        is_file_checkpoint = isinstance(self.s3, CheckpointFileS3) if self.s3 else False
+
+        # List of candidate paths to check (in priority order)
+        candidate_paths = [
+            # 1. UUID subdirectory/file in workspace root
+            os.path.join(ngc_workspace, self.uuid),
+            # 2. UUID subdirectory/file in checkpoints/
+            os.path.join(ngc_workspace, "checkpoints", self.uuid),
+        ]
+
+        # For file checkpoints, also check with common extensions
+        if is_file_checkpoint:
+            for ext in [".pth", ".pt", ".ckpt"]:
+                candidate_paths.extend([
+                    os.path.join(ngc_workspace, f"{self.uuid}{ext}"),
+                    os.path.join(ngc_workspace, "checkpoints", f"{self.uuid}{ext}"),
+                ])
+        else:
+            # For directory checkpoints, also check workspace root
+            candidate_paths.append(ngc_workspace)
+
+        # Check each candidate path
+        for path in candidate_paths:
+            if os.path.exists(path):
+                # For workspace root, verify it has checkpoint files
+                if path == ngc_workspace:
+                    config_path = os.path.join(path, "config.json")
+                    if not os.path.exists(config_path):
+                        continue  # Skip if no config.json in root
+                return path
+
+        # Fall back to HuggingFace download
         log.info(f"Downloading checkpoint {self.full_name}")
         return self.hf.path
 
