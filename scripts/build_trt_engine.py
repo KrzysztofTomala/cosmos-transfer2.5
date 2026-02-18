@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import argparse
+import dataclasses
 import gc
 import json
 import os
@@ -56,6 +57,8 @@ def make_parser():
     parser.add_argument("-O", dest="optimization_level", type=int, default=3, help="TRT optimization level")
     parser.add_argument("--controls_only", action="store_true", help="Build for control layers only (skip base layers).")
     parser.add_argument("--skip_testrun", action="store_true", help="Skip testrun")
+    parser.add_argument("--cp", nargs='+', type=int, default=[1],
+                        help="Context parallel size(s) to build profiles for (e.g. --cp 1 2 4 8).")
     return parser
 
 
@@ -66,7 +69,8 @@ class CosmosTRTEngineBuilder:
         model_meta: ModelMeta,
         dims: ModelDimensions,
         control_receiving_layers: list[int],
-        quant_mode: str
+        quant_mode: str,
+        cp_sizes: list[int] = None,
     ):
         self.pyt_stream = torch.cuda.current_stream()
         self.trt_stream = torch.cuda.Stream()
@@ -82,6 +86,7 @@ class CosmosTRTEngineBuilder:
         self.model_meta = model_meta
         self.model_dims = dims
         self.control_receiving_layers = control_receiving_layers
+        self.cp_sizes = cp_sizes if cp_sizes is not None else [1]
 
     def build(self, optimization_level: int, test_engines: bool, controls_only: bool):
         assert os.path.exists(self.onnx_dir), f"Missing ONNX source folder: {self.onnx_dir}"
@@ -119,6 +124,7 @@ class CosmosTRTEngineBuilder:
             block_meta=meta,
             dims=self.model_dims,
             optimization_level=optimization_level,
+            cp_sizes=self.cp_sizes,
         )
 
         # Test
@@ -147,31 +153,36 @@ class CosmosTRTEngineBuilder:
         register_input = partial(trt_set_tensor_check, context, check_shape=True)
         register_output = partial(trt_set_tensor_check, context, check_shape=False)
 
-        for resolution, profile_idx in resolution_profiles.items():
-            context.set_optimization_profile_async(profile_idx, self.pyt_stream.cuda_stream)
+        # resolution_profiles: {resolution: {cp_str: profile_idx}}
+        for resolution, cp_profiles in resolution_profiles.items():
             model_dim = self.model_dims[resolution]
-            dummy_tensors = make_dummy_tensors(model_dim, with_outputs=True)
-            set_loc_cp_ranks([0])
+            for cp_str, profile_idx in cp_profiles.items():
+                cp_size = int(cp_str)
+                context.set_optimization_profile_async(profile_idx, self.pyt_stream.cuda_stream)
+                cp_dim = dataclasses.replace(model_dim, T=model_dim.T // cp_size)
+                dummy_tensors = make_dummy_tensors(cp_dim, with_outputs=True)
+                set_loc_cp_ranks([0])
 
-            for key in meta.fixed_inputs:
-                register_input(key, dummy_tensors[key])
-            if meta.is_control:
-                if meta.block_index == 0:
-                    c = dummy_tensors["control_B_T_H_W_D"]
+                for key in meta.fixed_inputs:
+                    register_input(key, dummy_tensors[key])
+                if meta.is_control:
+                    if meta.block_index == 0:
+                        c = dummy_tensors["control_B_T_H_W_D"]
+                    else:
+                        c = dummy_tensors["output_hints"][:meta.block_index+1]
+                    register_input("c", c)
+                    register_output('output', dummy_tensors["output_hints"][:meta.block_index+2])
                 else:
-                    c = dummy_tensors["output_hints"][:meta.block_index+1]
-                register_input("c", c)
-                register_output('output', dummy_tensors["output_hints"][:meta.block_index+2])
-            else:
-                register_output('output', dummy_tensors["output_B_T_H_W_D"])
-                
-            self.trt_stream.wait_stream(self.pyt_stream)
-            context.execute_async_v3(self.trt_stream.cuda_stream)
-            self.pyt_stream.wait_stream(self.trt_stream)
+                    register_output('output', dummy_tensors["output_B_T_H_W_D"])
+
+                self.trt_stream.wait_stream(self.pyt_stream)
+                context.execute_async_v3(self.trt_stream.cuda_stream)
+                self.pyt_stream.wait_stream(self.trt_stream)
+
+                del dummy_tensors
 
         del context
         del engine
-        del dummy_tensors
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -186,7 +197,8 @@ def main(cmdargs):
     del pipe
 
     builder = CosmosTRTEngineBuilder(
-        args.output_dir, args.model, dims, control_receiving_layers, cmdargs.mode)
+        args.output_dir, args.model, dims, control_receiving_layers, cmdargs.mode,
+        cp_sizes=cmdargs.cp)
     builder.build(optimization_level=cmdargs.optimization_level,
                   test_engines=not cmdargs.skip_testrun,
                   controls_only=cmdargs.controls_only)

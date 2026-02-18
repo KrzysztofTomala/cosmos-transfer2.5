@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
 from types import SimpleNamespace
 
 import torch
@@ -85,25 +86,35 @@ def trt_engine_from_onnx_block(
     dims: ModelDimensions,
     optimization_level: int = 3,
     explicit_bounds: OperationalBounds = None,
+    cp_sizes: list[int] = None,
 ):
+    if cp_sizes is None:
+        cp_sizes = [1]
+
     # Prepare build config
     config = trt_builder.create_builder_config()
     config.builder_optimization_level = optimization_level
-    resolution_profiles = {} # {resulution: profile_idx}
-    for profile_idx, (resolution, model_dim) in enumerate(dims.items()):
-        resolution_bounds = (min(model_dim.H, model_dim.W), max(model_dim.H, model_dim.W))
-        bounds = explicit_bounds or OperationalBounds(
-            T_MIN=1,
-            T_MAX=model_dim.T,
-            H_MIN=resolution_bounds[0],
-            W_MIN=resolution_bounds[0],
-            H_MAX=resolution_bounds[1],
-            W_MAX=resolution_bounds[1],
-        )
+    # {resolution: {cp_str: profile_idx}}
+    resolution_profiles = {}
+    profile_idx = 0
+    for cp_size in cp_sizes:
+        for resolution, model_dim in dims.items():
+            # Adjust T for this CP size: each rank sees T // cp_size tokens
+            cp_dim = dataclasses.replace(model_dim, T=model_dim.T // cp_size)
+            resolution_bounds = (min(cp_dim.H, cp_dim.W), max(cp_dim.H, cp_dim.W))
+            bounds = explicit_bounds or OperationalBounds(
+                T_MIN=1,
+                T_MAX=cp_dim.T,
+                H_MIN=resolution_bounds[0],
+                W_MIN=resolution_bounds[0],
+                H_MAX=resolution_bounds[1],
+                W_MAX=resolution_bounds[1],
+            )
 
-        profile = optimization_profile_block(trt_builder, block_meta, model_dim, bounds)
-        config.add_optimization_profile(profile)
-        resolution_profiles[resolution] = profile_idx
+            profile = optimization_profile_block(trt_builder, block_meta, cp_dim, bounds)
+            config.add_optimization_profile(profile)
+            resolution_profiles.setdefault(resolution, {})[str(cp_size)] = profile_idx
+            profile_idx += 1
 
     # Prepare graph and load block
     log.info(f"Loading ONNX block from {onnx_path}")
