@@ -387,26 +387,8 @@ class ControlVideo2WorldInference:
         if input_frames.shape[1] == 0:
             raise ValueError("Input video is empty")
 
-        # Get text context embeddings
-        log.info("Computing prompt text embeddings...")
-        with _maybe_get_timer(self.benchmark_timer, "get_text_embeddings"):
-            if self.text_encoder_class == "T5":
-                text_embeddings = get_t5_from_prompt(prompt, text_encoder_class="T5", cache_dir=self.cache_dir)
-            else:
-                text_embeddings = self.model.text_encoder.compute_text_embeddings_online(
-                    {"ai_caption": [prompt], "images": None}, input_caption_key="ai_caption"
-                )
-            if negative_prompt:
-                log.info("Computing negative prompt text embeddings...")
-                if self.text_encoder_class == "T5":
-                    neg_text_embeddings = get_t5_from_prompt(
-                        negative_prompt, text_encoder_class="T5", cache_dir=self.cache_dir
-                    )
-                else:
-                    neg_text_embeddings = self.model.text_encoder.compute_text_embeddings_online(
-                        {"ai_caption": [negative_prompt], "images": None}, input_caption_key="ai_caption"
-                    )
-                self.neg_t5_embeddings = neg_text_embeddings
+        # text_embeddings are pre-computed and passed in directly (NIM pre-computes them externally).
+        # Negative prompt embeddings are set on self.neg_t5_embeddings by the caller if needed.
 
         # Process image context if provided; else will be None
         log.info("Processing image context if available...")

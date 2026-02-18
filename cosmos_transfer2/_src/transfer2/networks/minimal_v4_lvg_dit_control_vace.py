@@ -927,6 +927,8 @@ class MinimalV4LVGControlVaceDiT(MiniTrainDITImageContext):
             if not isinstance(control_context_scale, torch.Tensor):
                 control_context_scale = torch.tensor([control_context_scale],
                                                      dtype=torch.bfloat16, device=x_B_T_H_W_D.device)
+            elif control_context_scale.ndim == 0:
+                control_context_scale = control_context_scale.unsqueeze(0)
 
             # FIXME: Next time, need to check tensor shape every time we trace so that we'll notice this emb_B_T_D could contain one broadcasting dim 
             def _bcast_T(t):
