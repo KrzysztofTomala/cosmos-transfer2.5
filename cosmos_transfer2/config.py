@@ -165,11 +165,11 @@ class ModelKey:
 
 
 MODEL_CHECKPOINTS = {
-    ModelKey(variant=ModelVariant.DEPTH): get_checkpoint_by_uuid("626e6618-bfcd-4d9a-a077-1409e2ce353f"),
-    ModelKey(variant=ModelVariant.EDGE): get_checkpoint_by_uuid("61f5694b-0ad5-4ecd-8ad7-c8545627d125"),
-    ModelKey(variant=ModelVariant.SEG): get_checkpoint_by_uuid("5136ef49-6d8d-42e8-8abf-7dac722a304a"),
-    ModelKey(variant=ModelVariant.VIS): get_checkpoint_by_uuid("ba2f44f2-c726-4fe7-949f-597069d9b91c"),
-    ModelKey(variant=ModelVariant.AUTO_MULTIVIEW): get_checkpoint_by_uuid("4ecc66e9-df19-4aed-9802-0d11e057287a"),
+    ModelKey(variant=ModelVariant.DEPTH): get_checkpoint_by_uuid("0f214f66-ae98-43cf-ab25-d65d09a7e68f"),
+    ModelKey(variant=ModelVariant.EDGE): get_checkpoint_by_uuid("ecd0ba00-d598-4f94-aa09-e8627899c431"),
+    ModelKey(variant=ModelVariant.SEG): get_checkpoint_by_uuid("fcab44fe-6fe7-492e-b9c6-67ef8c1a52ab"),
+    ModelKey(variant=ModelVariant.VIS): get_checkpoint_by_uuid("20d9fd0b-af4c-4cca-ad0b-f9b45f0805f1"),
+    ModelKey(variant=ModelVariant.AUTO_MULTIVIEW): get_checkpoint_by_uuid("b5ab002d-a120-4fbf-a7f9-04af8615710b"),
 }
 if EXPERIMENTAL_CHECKPOINTS:
     MODEL_CHECKPOINTS |= {

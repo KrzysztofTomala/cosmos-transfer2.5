@@ -92,11 +92,24 @@ class CheckpointFileHf(_CheckpointHf):
 
     @override
     def _download(self) -> str:
-        """Download checkpoint and return the local path."""
+        """Return local path from NGC workspace, or raise if not found.
+
+        Tries NGC workspace locations before failing — HuggingFace downloads
+        are disabled, but the file may be available locally.
+        """
+        ngc_workspace = os.environ.get("NIM_WORKSPACE", "/opt/nim/workspace")
+        candidates = [
+            os.path.join(ngc_workspace, self.filename),
+            os.path.join(ngc_workspace, "checkpoints", "diffusion", "torch", self.filename),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
         raise RuntimeError(
             f"Hugging Face downloads are disabled. "
             f"Cannot download {self.filename} from {self.repository}@{self.revision}. "
-            f"Please ensure all required checkpoints are available in NGC workspace."
+            f"Searched NGC workspace paths:\n"
+            + "\n".join(f"  {p}" for p in candidates)
         )
 
 
@@ -163,54 +176,66 @@ class CheckpointConfig(pydantic.BaseModel):
 
     @cached_property
     def path(self) -> str:
-        """Return S3 URI or local path."""
+        """Return S3 URI or local path.
+
+        Resolution order (NIM / NGC deployments):
+        1. Internal S3 URI (NVIDIA internal only).
+        2. Per-checkpoint env var override: CHECKPOINT_<UUID_WITH_UNDERSCORES>=/path
+        3. NIM workspace lookup by UUID (legacy layout).
+        4. NIM workspace lookup by HF filename/subdirectory (NIM standard layout).
+        5. Raise RuntimeError — HuggingFace downloads are disabled.
+        """
         if INTERNAL and self.s3 is not None:
             return self.s3.uri
-        # Check NGC workspace first (for NIM deployments)
+
         ngc_workspace = os.environ.get("NIM_WORKSPACE", "/opt/nim/workspace")
 
-        # Check if there's a checkpoint mapping via environment variable first
-        # Format: CHECKPOINT_{UUID}=/path/to/checkpoint
+        # Per-checkpoint env var override: CHECKPOINT_{UUID}=/path/to/checkpoint
         env_var_name = f"CHECKPOINT_{self.uuid.replace('-', '_').upper()}"
         env_path = os.environ.get(env_var_name)
         if env_path and os.path.exists(env_path):
             return env_path
 
-        # Determine if this is a file or directory checkpoint
-        is_file_checkpoint = isinstance(self.s3, CheckpointFileS3) if self.s3 else False
+        # --- Build candidate paths ---
+        is_file_checkpoint = isinstance(self.hf, CheckpointFileHf)
+        candidate_paths: list[str] = []
 
-        # List of candidate paths to check (in priority order)
-        candidate_paths = [
-            # 1. UUID subdirectory/file in workspace root
-            os.path.join(ngc_workspace, self.uuid),
-            # 2. UUID subdirectory/file in checkpoints/
-            os.path.join(ngc_workspace, "checkpoints", self.uuid),
-        ]
-
-        # For file checkpoints, also check with common extensions
+        # Legacy layout: {workspace}/{uuid}[.ext]
+        candidate_paths.append(os.path.join(ngc_workspace, self.uuid))
+        candidate_paths.append(os.path.join(ngc_workspace, "checkpoints", self.uuid))
         if is_file_checkpoint:
-            for ext in [".pth", ".pt", ".ckpt"]:
-                candidate_paths.extend([
-                    os.path.join(ngc_workspace, f"{self.uuid}{ext}"),
-                    os.path.join(ngc_workspace, "checkpoints", f"{self.uuid}{ext}"),
-                ])
-        else:
-            # For directory checkpoints, also check workspace root
-            candidate_paths.append(ngc_workspace)
+            for ext in (".pth", ".pt", ".ckpt"):
+                candidate_paths.append(os.path.join(ngc_workspace, f"{self.uuid}{ext}"))
+                candidate_paths.append(os.path.join(ngc_workspace, "checkpoints", f"{self.uuid}{ext}"))
 
-        # Check each candidate path
+        # NIM standard layout: {workspace}/{hf.filename} or {workspace}/{hf.subdirectory}
+        # Also check under checkpoints/diffusion/torch/ (NIM deployment layout for diffusion models)
+        if is_file_checkpoint and isinstance(self.hf, CheckpointFileHf):
+            candidate_paths.append(os.path.join(ngc_workspace, self.hf.filename))
+            candidate_paths.append(os.path.join(ngc_workspace, "checkpoints", "diffusion", "torch", self.hf.filename))
+        elif isinstance(self.hf, CheckpointDirHf):
+            if self.hf.subdirectory:
+                candidate_paths.append(os.path.join(ngc_workspace, self.hf.subdirectory))
+                candidate_paths.append(os.path.join(ngc_workspace, "checkpoints", "diffusion", "torch", self.hf.subdirectory))
+            else:
+                # No subdirectory: the workspace root itself may be the checkpoint dir
+                candidate_paths.append(ngc_workspace)
+
         for path in candidate_paths:
             if os.path.exists(path):
-                # For workspace root, verify it has checkpoint files
                 if path == ngc_workspace:
-                    config_path = os.path.join(path, "config.json")
-                    if not os.path.exists(config_path):
-                        continue  # Skip if no config.json in root
+                    # Sanity-check: workspace root must contain a config.json to be valid
+                    if not os.path.exists(os.path.join(path, "config.json")):
+                        continue
                 return path
 
-        # Fall back to HuggingFace download
-        log.info(f"Downloading checkpoint {self.full_name}")
-        return self.hf.path
+        raise RuntimeError(
+            f"Checkpoint {self.full_name} not found in NGC workspace '{ngc_workspace}'. "
+            f"HuggingFace downloads are disabled in this environment. "
+            f"Searched paths:\n"
+            + "\n".join(f"  {p}" for p in candidate_paths)
+            + f"\nTo override, set {env_var_name}=/path/to/checkpoint."
+        )
 
     @classmethod
     def from_uuid(cls, uuid: str):
