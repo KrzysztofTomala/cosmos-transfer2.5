@@ -572,11 +572,11 @@ class ControlVideo2WorldInference:
 
             full_video = full_video.cpu()
             # Concatenate all control chunks and trim to original frames
-            for key in hint_key:
-                if all_control_chunks[key]:
-                    control_video_dict[key] = torch.cat(all_control_chunks[key], dim=2)  # (1, C, T, H, W)
-                    # Keep only the original number of frames
-                    control_video_dict[key] = control_video_dict[key][:, :, :num_total_frames, :, :]
+            #for key in hint_key:
+            #    if all_control_chunks[key]:
+            #        control_video_dict[key] = torch.cat(all_control_chunks[key], dim=2)  # (1, C, T, H, W)
+            #        # Keep only the original number of frames
+            #        control_video_dict[key] = control_video_dict[key][:, :, :num_total_frames, :, :]
 
             if keep_input_resolution:
                 # reshape output video to match the input video resolution
@@ -584,13 +584,13 @@ class ControlVideo2WorldInference:
                     full_video, hint_key, show_control_condition, show_input, original_hw
                 )
                 # Also resize control videos to match input resolution
-                for key in hint_key:
-                    if key in control_video_dict and control_video_dict[key] is not None:
-                        control_video_dict[key] = reshape_output_video_to_input_resolution(
-                            control_video_dict[key], [key], False, False, original_hw
-                        )
+                #for key in hint_key:
+                #    if key in control_video_dict and control_video_dict[key] is not None:
+                #        control_video_dict[key] = reshape_output_video_to_input_resolution(
+                #            control_video_dict[key], [key], False, False, original_hw
+                #        )
         log.info(f"Average time per chunk: {sum(time_per_chunk) / len(time_per_chunk)}")
-        return full_video, control_video_dict, mask_video_dict, fps, original_hw
+        return full_video, None, mask_video_dict, fps, original_hw
 
     @torch.no_grad()
     def generate_img2world(
