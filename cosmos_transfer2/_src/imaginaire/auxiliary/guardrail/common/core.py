@@ -19,24 +19,14 @@ import numpy as np
 
 from cosmos_transfer2._src.imaginaire.utils import log
 from cosmos_transfer2._src.imaginaire.utils.checkpoint_db import (
-    CheckpointConfig,
     CheckpointDirHf,
-    get_checkpoint_by_uuid,
-    register_checkpoint,
 )
 
-register_checkpoint(
-    CheckpointConfig(
-        uuid="9c7b7da4-2d95-45bb-9cb8-2eed954e9736",
-        name="nvidia/Cosmos-Guardrail1",
-        hf=CheckpointDirHf(
-            repository="nvidia/Cosmos-Guardrail1",
-            revision="d6d4bfa899a71454a700907664f3e88f503950cf",
-        ),
-    ),
+GUARDRAIL1_CHECKPOINT = CheckpointDirHf(
+    repository="nvidia/Cosmos-Guardrail1",
+    revision="d6d4bfa899a71454a700907664f3e88f503950cf",
 )
 GUARDRAIL1_UUID = "9c7b7da4-2d95-45bb-9cb8-2eed954e9736"
-# GUARDRAIL1_CHECKPOINT_DIR = get_checkpoint_by_uuid(GUARDRAIL1_UUID).path
 # Lazy-load only if needed (when checkpoint_dir is None in Blocklist)
 GUARDRAIL1_CHECKPOINT_DIR = None  # Will be loaded lazily if needed
 
@@ -44,8 +34,8 @@ def _get_guardrail1_checkpoint_dir_lazy():
     """Lazy load GUARDRAIL1_CHECKPOINT_DIR only when actually needed (fallback mode)."""
     global GUARDRAIL1_CHECKPOINT_DIR
     if GUARDRAIL1_CHECKPOINT_DIR is None:
-        from cosmos_transfer2._src.imaginaire.utils.checkpoint_db import get_checkpoint_by_uuid
-        GUARDRAIL1_CHECKPOINT_DIR = get_checkpoint_by_uuid(GUARDRAIL1_UUID).path
+        from cosmos_transfer2._src.imaginaire.utils.checkpoint_db import CheckpointConfig
+        GUARDRAIL1_CHECKPOINT_DIR = CheckpointConfig.from_uri(GUARDRAIL1_UUID).path
     return GUARDRAIL1_CHECKPOINT_DIR
 
 
