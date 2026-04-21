@@ -50,7 +50,7 @@ dependencies = [
   "numpydantic>=1.7.0",
   "nvidia-ml-py>=13.580.82",
   "omegaconf>=2.3.0",
-  "opencv-python>=4.11.0.86",
+  "opencv-python-headless>=4.11.0.86",
   "pandas>=2.3.3",
   "pyarrow>=19.0.0",
   "peft>=0.17.1",
@@ -169,35 +169,35 @@ cosmos-gradio = [{ workspace = true }]
 # https://docs.astral.sh/uv/guides/integration/pytorch/#configuring-accelerators-with-optional-dependencies
 decord = [
   { index = "cosmos-cu128-torch27", extra = "cu128_torch27", marker = "platform_machine == 'aarch64'" },
-  { index = "cosmos-cu130-torch29", extra = "cu130_torch29", marker = "platform_machine == 'aarch64'" },
+  { index = "ktomala-cu130-torch29", extra = "cu130_torch29", marker = "platform_machine == 'aarch64'" },
 ]
 flash-attn = [
   { index = "cosmos-cu128-torch27", extra = "cu128_torch27" },
-  { index = "cosmos-cu130-torch29", extra = "cu130_torch29" },
+  { index = "ktomala-cu130-torch29", extra = "cu130_torch29" },
 ]
 natten = [
   { index = "cosmos-cu128-torch27", extra = "cu128_torch27" },
-  { index = "cosmos-cu130-torch29", extra = "cu130_torch29" },
+  { index = "ktomala-cu130-torch29", extra = "cu130_torch29" },
 ]
 transformer-engine = [
   { index = "cosmos-cu128-torch27", extra = "cu128_torch27" },
-  { index = "cosmos-cu130-torch29", extra = "cu130_torch29" },
+  { index = "ktomala-cu130-torch29", extra = "cu130_torch29" },
 ]
 torch = [
   { index = "cosmos-cu128-torch27", extra = "cu128_torch27" },
-  { index = "cosmos-cu130-torch29", extra = "cu130_torch29" },
+  { index = "pytorch-cu130", extra = "cu130_torch29" },
 ]
 torchvision = [
   { index = "cosmos-cu128-torch27", extra = "cu128_torch27" },
-  { index = "cosmos-cu130-torch29", extra = "cu130_torch29" },
+  { index = "pytorch-cu130", extra = "cu130_torch29" },
 ]
 triton = [
   { index = "cosmos-cu128-torch27", extra = "cu128_torch27" },
-  { index = "cosmos-cu130-torch29", extra = "cu130_torch29" },
+  { index = "pytorch-cu130", extra = "cu130_torch29" },
 ]
 xformers = [
   { index = "cosmos-cu128-torch27", extra = "cu128_torch27" },
-  { index = "cosmos-cu130-torch29", extra = "cu130_torch29" },
+  { index = "ktomala-cu130-torch29", extra = "cu130_torch29" },
 ]
 
 [[tool.uv.index]]
@@ -208,6 +208,16 @@ explicit = true
 [[tool.uv.index]]
 name = "cosmos-cu130-torch29"
 url = "https://nvidia-cosmos.github.io/cosmos-dependencies/v1.2.0/cu130_torch29/simple"
+explicit = true
+
+[[tool.uv.index]]
+name = "ktomala-cu130-torch29"
+url = "https://krzysztoftomala.github.io/cosmos-dependencies/"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.hatch.version]
